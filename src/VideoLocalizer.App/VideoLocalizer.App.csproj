@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Dùng WPF với .NET 10 -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Bật WPF support -->
+    <UseWPF>true</UseWPF>
+    <!-- Tên assembly và namespace gốc -->
+    <AssemblyName>VideoLocalizer</AssemblyName>
+    <RootNamespace>VideoLocalizer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UI Library: WPF-UI (Fluent Design cho .NET 8+) -->
+    <PackageReference Include="WPF-UI" Version="3.*" />
+
+    <!-- MVVM Toolkit: CommunityToolkit.Mvvm (ObservableObject, RelayCommand...) -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.*" />
+
+    <!-- Video player: LibVLCSharp dùng libVLC để play video -->
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.*" />
+    <!-- LibVLC native binaries (REQUIRED cùng với LibVLCSharp) -->
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.*" />
+
+    <!-- JSON: dùng cho save/load project file -->
+    <PackageReference Include="System.Text.Json" Version="10.0.5" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,404 @@
+<!-- Views/MainWindow.xaml -->
+<!-- Layout chính: Menu trên → Content (Video trái 60%, Panel phải 40%) → Status bar dưới -->
+<ui:FluentWindow
+    x:Class="VideoLocalizer.Views.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
+    xmlns:vm="clr-namespace:VideoLocalizer.ViewModels"
+    xmlns:conv="clr-namespace:VideoLocalizer.Converters"
+    Title="AI Video Localizer"
+    Width="1280" Height="800"
+    MinWidth="900" MinHeight="600"
+    WindowStartupLocation="CenterScreen"
+    ExtendsContentIntoTitleBar="True">
+
+    <!-- ═══════════════════════════════════════════════
+         RESOURCES: Converters + Styles dùng trong file này
+    ═══════════════════════════════════════════════════ -->
+    <ui:FluentWindow.Resources>
+        <conv:TimeSpanConverter x:Key="TimeSpanConverter"/>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
+        <conv:BoolToVisibilityConverter x:Key="InvertBoolToVisibility"/>
+    </ui:FluentWindow.Resources>
+
+    <!-- DataContext = MainViewModel (toàn bộ binding đều qua đây) -->
+    <ui:FluentWindow.DataContext>
+        <vm:MainViewModel/>
+    </ui:FluentWindow.DataContext>
+
+    <!-- ═══════════════════════════════════════════════
+         ROOT LAYOUT: Grid 3 hàng = Menu (Top) + Content (Fill) + StatusBar (Bottom)
+    ═══════════════════════════════════════════════════ -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- Row 0: TitleBar -->
+            <RowDefinition Height="*"/>    <!-- Row 1: Content -->
+            <RowDefinition Height="Auto"/> <!-- Row 2: StatusBar -->
+        </Grid.RowDefinitions>
+
+        <!-- ─── TITLE BAR + MENU (Row 0) ─── -->
+        <ui:TitleBar Grid.Row="0" Title="AI Video Localizer">
+            <!-- Menu nằm trong custom title bar area -->
+            <ui:TitleBar.Header>
+                <Menu Background="Transparent" VerticalAlignment="Center" Margin="8,0,0,0">
+
+                    <!-- File Menu -->
+                    <MenuItem Header="_File">
+                        <MenuItem Header="Mở Video..." Command="{Binding OpenVideoCommand}"
+                                  InputGestureText="Ctrl+O"/>
+                        <MenuItem Header="Load SRT..." Command="{Binding LoadSrtCommand}"/>
+                        <MenuItem Header="Lưu SRT" Command="{Binding SaveSrtCommand}"
+                                  InputGestureText="Ctrl+S"/>
+                        <Separator/>
+                        <MenuItem Header="Thoát" Click="MenuExit_Click"/>
+                    </MenuItem>
+
+                    <!-- Tools Menu -->
+                    <MenuItem Header="_Tools">
+                        <!-- IsChecked bind để hiện trạng thái OCR mode đang bật/tắt -->
+                        <MenuItem Header="Chọn vùng OCR..."
+                                  Name="MenuSelectOcrRegion"
+                                  IsCheckable="True"
+                                  Click="MenuSelectOcrRegion_Click"
+                                  ToolTip="Kéo chuột trên video để chọn vùng có hardsub"/>
+                        <MenuItem Header="OCR Hardsub..." Name="MenuOcr" Click="MenuOcr_Click"/>
+                        <MenuItem Header="Dịch SRT..." Name="MenuTranslate" Click="MenuTranslate_Click"/>
+                        <Separator/>
+                        <MenuItem Header="STT (Phase 2)" IsEnabled="False"/>
+                        <MenuItem Header="Dubbing (Phase 2)" IsEnabled="False"/>
+                    </MenuItem>
+
+                    <!-- Settings Menu -->
+                    <MenuItem Header="_Cài đặt" Click="MenuSettings_Click"/>
+
+                </Menu>
+            </ui:TitleBar.Header>
+        </ui:TitleBar>
+
+        <!-- ─── STATUS BAR (Row 2) ─── -->
+        <StatusBar Grid.Row="2" Height="28">
+            <StatusBarItem>
+                <!-- Icon kết nối backend: xanh = connected, đỏ = disconnected -->
+                <StackPanel Orientation="Horizontal" Margin="4,0">
+                    <Ellipse Width="10" Height="10" Margin="0,0,6,0">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="#FF4444"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsBackendConnected}" Value="True">
+                                        <Setter Property="Fill" Value="#44FF88"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center"/>
+                </StackPanel>
+            </StatusBarItem>
+
+            <!-- Separator đẩy Progress sang phải -->
+            <StatusBarItem HorizontalAlignment="Right">
+                <!-- Chỉ hiện khi IsBusy = true -->
+                <StackPanel Orientation="Horizontal"
+                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+                    <!-- % tiến độ -->
+                    <TextBlock Text="{Binding TaskProgress, StringFormat={}{0}%}"
+                               VerticalAlignment="Center" Margin="0,0,6,0" FontSize="11"/>
+                    <ProgressBar Height="10" Width="160"
+                                 Value="{Binding TaskProgress}"/>
+                </StackPanel>
+            </StatusBarItem>
+        </StatusBar>
+
+        <!-- ═══════════════════════════════════════════════
+             MAIN CONTENT: Grid 2 cột (Video 60% | Panel phải 40%)
+        ═══════════════════════════════════════════════════ -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <!-- Cột trái: Video player (60% = 3*) -->
+                <ColumnDefinition Width="3*"/>
+                <!-- Splitter: user có thể kéo để điều chỉnh tỷ lệ -->
+                <ColumnDefinition Width="4"/>
+                <!-- Cột phải: Style + Glossary + DataGrid (40% = 2*) -->
+                <ColumnDefinition Width="2*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ─── PANEL TRÁI: VIDEO PLAYER ─── -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <!-- Video view chiếm phần lớn -->
+                    <RowDefinition Height="*"/>
+                    <!-- Transport controls (Play/Pause/Seek/Volume) -->
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- LibVLCSharp VideoView + Canvas overlay trong 1 Grid
+                     Grid.Row="0" để cả 2 chiếm cùng ô, overlap nhau -->
+                <Grid Grid.Row="0">
+
+                    <!-- Video render ở đây -->
+                    <vlc:VideoView Name="VideoView" Background="Black"/>
+
+                    <!-- Placeholder overlay khi đang chọn vùng OCR.
+                         VideoView (HWND) bị ẩn → placeholder này hiện thay thế.
+                         Không dùng snapshot vì TakeSnapshot + file I/O gây lag.
+                         User biết subtitle ở đâu (thường đáy video) nên không cần xem frame. -->
+                    <Border Name="OcrPlaceholder"
+                            Background="#DD111111"
+                            Visibility="Collapsed">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock Text="🖱 Kéo chuột để khoanh vùng có subtitle"
+                                       Foreground="White" FontSize="15" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"/>
+                            <TextBlock Text="(thường ở 70–90% chiều cao video)"
+                                       Foreground="#AAAAAA" FontSize="12" Margin="0,6,0,0"
+                                       HorizontalAlignment="Center"/>
+                            <TextBlock Text="Nhấn Esc hoặc bỏ tick menu để hủy"
+                                       Foreground="#888888" FontSize="11" Margin="0,4,0,0"
+                                       HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Canvas overlay: dùng để user kéo chọn vùng OCR
+                         IsHitTestVisible=False khi không ở OCR mode → không block click video -->
+                    <Canvas Name="OcrCanvas"
+                            Background="Transparent"
+                            IsHitTestVisible="False"
+                            Cursor="Cross"
+                            MouseLeftButtonDown="OcrCanvas_MouseDown"
+                            MouseMove="OcrCanvas_MouseMove"
+                            MouseLeftButtonUp="OcrCanvas_MouseUp">
+
+                        <!-- Rectangle hiển thị vùng OCR đã chọn (luôn hiện khi có vùng chọn) -->
+                        <Rectangle Name="OcrSelectionRect"
+                                   Stroke="#FFD700"
+                                   StrokeThickness="2"
+                                   Fill="#33FFD700"
+                                   StrokeDashArray="6 3"
+                                   Visibility="Collapsed"/>
+
+                        <!-- Label hiển thị "OCR Region" ở góc trên của hộp chọn -->
+                        <Border Name="OcrLabelBorder"
+                                Background="#CC000000"
+                                CornerRadius="3"
+                                Padding="4,2"
+                                Visibility="Collapsed">
+                            <TextBlock Name="OcrLabel"
+                                       Text="OCR Region"
+                                       Foreground="#FFD700"
+                                       FontSize="11"/>
+                        </Border>
+
+                    </Canvas>
+
+                </Grid>
+
+                <!-- Transport controls bar -->
+                <Border Grid.Row="1" Background="#1E1E1E" Padding="8,6">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>  <!-- Play/Pause button -->
+                            <ColumnDefinition Width="*"/>     <!-- Seek slider -->
+                            <ColumnDefinition Width="Auto"/>  <!-- Time label -->
+                            <ColumnDefinition Width="Auto"/>  <!-- Volume icon -->
+                            <ColumnDefinition Width="80"/>    <!-- Volume slider -->
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Nút Play/Pause (dùng UI icon) -->
+                        <ui:Button Grid.Column="0"
+                                   Name="BtnPlayPause"
+                                   Icon="{ui:SymbolIcon Play24}"
+                                   Click="BtnPlayPause_Click"
+                                   Margin="0,0,8,0"
+                                   ToolTip="Play/Pause (Space)"/>
+
+                        <!-- Seek slider — giá trị 0.0 → 1.0 (% tiến độ video)
+                             IsMoveToPointEnabled="True": click đâu thì nhảy đúng đó
+                             LargeChange="0.05": phím PgUp/Down tua 5%
+                             KHÔNG dùng PreviewMouseDown/Up vì gây bug LargeChange -->
+                        <Slider Grid.Column="1" Name="SeekSlider"
+                                Minimum="0" Maximum="1"
+                                SmallChange="0.005"
+                                LargeChange="0.05"
+                                IsMoveToPointEnabled="True"
+                                VerticalAlignment="Center"
+                                Loaded="SeekSlider_Loaded"/>
+
+                        <!-- Hiển thị thời gian hiện tại / tổng -->
+                        <TextBlock Grid.Column="2" Name="TxtTime"
+                                   Text="00:00 / 00:00"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0" FontSize="11"
+                                   Foreground="White"/>
+
+                        <!-- Volume icon -->
+                        <ui:SymbolIcon Grid.Column="3" Symbol="Speaker224"
+                                       Margin="8,0,4,0" VerticalAlignment="Center"/>
+
+                        <!-- Volume slider 0–100 -->
+                        <Slider Grid.Column="4" Name="VolumeSlider"
+                                Minimum="0" Maximum="100" Value="80"
+                                VerticalAlignment="Center"
+                                ValueChanged="VolumeSlider_ValueChanged"/>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- GridSplitter: cho phép user kéo dãn cột -->
+            <GridSplitter Grid.Column="1"
+                          Width="4" HorizontalAlignment="Stretch"
+                          Background="#333"/>
+
+            <!-- ─── PANEL PHẢI: Style + Glossary + DataGrid ─── -->
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <!-- Style radio buttons -->
+                    <RowDefinition Height="Auto"/>
+                    <!-- Glossary textbox -->
+                    <RowDefinition Height="Auto"/>
+                    <!-- Toolbar (Load SRT, Save, Export) -->
+                    <RowDefinition Height="Auto"/>
+                    <!-- DataGrid (chiếm phần còn lại) -->
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- ── Style Selector (Radio Buttons) ── -->
+                <GroupBox Grid.Row="0" Header="Phong cách dịch" Margin="6,6,6,0" Padding="8,4">
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <!-- Mỗi RadioButton bind IsChecked vào SelectedStyle qua converter -->
+                        <!-- Dùng GroupName để chúng exclusive -->
+                        <RadioButton Content="Đời sống / Livestream"
+                                     GroupName="TranslateStyle"
+                                     IsChecked="{Binding SelectedStyle,
+                                         Converter={StaticResource RadioStyleConverter},
+                                         ConverterParameter=lifestyle}"
+                                     Margin="0,0,12,0"/>
+                        <RadioButton Content="Review phim"
+                                     GroupName="TranslateStyle"
+                                     IsChecked="{Binding SelectedStyle,
+                                         Converter={StaticResource RadioStyleConverter},
+                                         ConverterParameter=review}"
+                                     Margin="0,0,12,0"/>
+                        <RadioButton Content="Phim cổ trang"
+                                     GroupName="TranslateStyle"
+                                     IsChecked="{Binding SelectedStyle,
+                                         Converter={StaticResource RadioStyleConverter},
+                                         ConverterParameter=ancient_drama}"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- ── Từ Điển Bắt Buộc (Glossary TextBox) ── -->
+                <GroupBox Grid.Row="1" Header="Từ điển bắt buộc (mỗi dòng: Gốc = Dịch)"
+                          Margin="6,4,6,0" Padding="6,4">
+                    <TextBox Name="GlossaryTextBox"
+                             Text="{Binding GlossaryText, UpdateSourceTrigger=PropertyChanged}"
+                             AcceptsReturn="True" 
+                             MinLines="3" MaxLines="5"
+                             VerticalScrollBarVisibility="Auto"
+                             FontFamily="Consolas" FontSize="12"
+                             ToolTip="Mỗi dòng 1 cặp, ví dụ: 大师姐 = Đại sư tỷ"/>
+                </GroupBox>
+
+                <!-- ── Subtitle Toolbar ── -->
+                <ToolBar Grid.Row="2" Margin="6,4,6,0">
+                    <ui:Button Content="Load SRT"
+                               Command="{Binding LoadSrtCommand}"
+                               Icon="{ui:SymbolIcon DocumentAdd24}"
+                               Margin="0,0,4,0"/>
+                    <ui:Button Content="Lưu SRT"
+                               Command="{Binding SaveSrtCommand}"
+                               Icon="{ui:SymbolIcon Save24}"
+                               Margin="0,0,4,0"/>
+                    <Separator/>
+
+                    <!-- Nút chạy OCR: bind vào RunOcrCommand (có CanExecute = !IsBusy) -->
+                    <ui:Button Name="BtnRunOcr"
+                               Content="Chạy OCR"
+                               Command="{Binding RunOcrCommand}"
+                               Icon="{ui:SymbolIcon ScanObject24}"
+                               ToolTip="Nhận diện chữ từ video (Hardsub OCR)"
+                               Margin="0,0,4,0"/>
+
+                    <!-- Nút dịch: bind vào RunTranslateCommand -->
+                    <ui:Button Name="BtnTranslate"
+                               Content="Dịch"
+                               Command="{Binding RunTranslateCommand}"
+                               Icon="{ui:SymbolIcon Translate24}"
+                               ToolTip="Dịch SRT sang tiếng Việt (Ollama)"
+                               Margin="0,0,4,0"/>
+
+                    <Separator/>
+
+                    <!-- Nút Hủy: chỉ active khi đang có task chạy (IsBusy = true) -->
+                    <ui:Button Name="BtnCancel"
+                               Content="Hủy"
+                               Command="{Binding CancelCurrentTaskCommand}"
+                               Icon="{ui:SymbolIcon Dismiss24}"
+                               Appearance="Danger"
+                               ToolTip="Hủy task đang chạy"/>
+                </ToolBar>
+
+                <!-- ── DataGrid: hiển thị subtitle entries ── -->
+                <!-- SelectedItem bind → ViewModel.SelectedSubtitle để sync với video -->
+                <!-- MouseDoubleClick: double-click dòng → seek video đến timestamp đó -->
+                <DataGrid Grid.Row="3"
+                          Name="SubtitleGrid"
+                          ItemsSource="{Binding Subtitles}"
+                          SelectedItem="{Binding SelectedSubtitle}"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          SelectionMode="Single"
+                          GridLinesVisibility="Horizontal"
+                          MouseDoubleClick="SubtitleGrid_MouseDoubleClick"
+                          Margin="6,4,6,6">
+
+                    <DataGrid.Columns>
+                        <!-- Cột #: số thứ tự, không edit, width nhỏ -->
+                        <DataGridTextColumn Header="#"
+                                           Binding="{Binding Index}"
+                                           IsReadOnly="True"
+                                           Width="40"/>
+
+                        <!-- Cột Start: thời gian bắt đầu, format qua converter -->
+                        <DataGridTextColumn Header="Bắt đầu"
+                                           Binding="{Binding StartTime,
+                                               Converter={StaticResource TimeSpanConverter}}"
+                                           IsReadOnly="True"
+                                           Width="90"/>
+
+                        <!-- Cột End -->
+                        <DataGridTextColumn Header="Kết thúc"
+                                           Binding="{Binding EndTime,
+                                               Converter={StaticResource TimeSpanConverter}}"
+                                           IsReadOnly="True"
+                                           Width="90"/>
+
+                        <!-- Cột Text: EDITABLE — user có thể sửa trực tiếp -->
+                        <DataGridTextColumn Header="Nội dung"
+                                           Binding="{Binding Text,
+                                               UpdateSourceTrigger=LostFocus}"
+                                           Width="*">
+                            <!-- Style wrap text nhiều dòng -->
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="MaxHeight" Value="60"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                            <DataGridTextColumn.EditingElementStyle>
+                                <Style TargetType="TextBox">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="AcceptsReturn" Value="True"/>
+                                </Style>
+                            </DataGridTextColumn.EditingElementStyle>
+                        </DataGridTextColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+            </Grid><!-- End Panel Phải -->
+        </Grid><!-- End Main Content Grid -->
+    </Grid><!-- End Root Grid -->
+</ui:FluentWindow>

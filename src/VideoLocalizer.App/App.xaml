@@ -1,0 +1,25 @@
+<!-- App.xaml: Entry point của WPF app, setup theme WPF-UI -->
+<Application x:Class="VideoLocalizer.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:conv="clr-namespace:VideoLocalizer.Converters"
+             StartupUri="Views/MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Import toàn bộ theme từ WPF-UI (Fluent Design) -->
+                <ui:ThemesDictionary Theme="Dark" />
+                <!-- Import icons từ WPF-UI -->
+                <ui:ControlsDictionary />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Converters dùng app-wide (không cần khai báo lại trong từng Window) -->
+            <conv:TimeSpanConverter x:Key="TimeSpanConverter"/>
+            <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
+            <conv:BoolToVisibilityConverter x:Key="InvertBoolToVisibility"/>
+            <!-- RadioStyleConverter: bind RadioButton.IsChecked ↔ string style -->
+            <conv:RadioStyleConverter x:Key="RadioStyleConverter"/>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
