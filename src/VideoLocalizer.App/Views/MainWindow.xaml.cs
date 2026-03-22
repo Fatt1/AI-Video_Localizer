@@ -31,6 +31,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     // ── Để tránh SeekSlider loop khi code cập nhật giá trị ──
     private bool _isSeeking = false;
 
+    // ── Cache độ dài video (ms) để seek vẫn hoạt động khi video Stopped ──
+    private long _videoLength = 0;
+
     // ── OCR Region Selection state ──
     /// <summary>true khi đang ở chế độ chọn vùng OCR</summary>
     private bool _isOcrSelectionMode = false;
@@ -100,6 +103,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _mediaPlayer.Media = media;
         media.Dispose(); // LibVLC giữ reference riêng, có thể dispose ngay
 
+        _videoLength = 0; // Reset cache — sẽ update từ OnTimeChanged
         _mediaPlayer.Play();
         VM.StatusMessage = $"Đang phát: {System.IO.Path.GetFileName(path)}";
     }
@@ -218,16 +222,42 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         double w = Math.Abs(current.X - _ocrDragStart.X);
         double h = Math.Abs(current.Y - _ocrDragStart.Y);
 
-        // Lưu OcrRegion dưới dạng tỉ lệ (resize-safe)
-        _ocrRegion = OcrRegion.FromPixels(x, y, w, h, OcrCanvas.ActualWidth, OcrCanvas.ActualHeight);
+        var videoRect = GetVideoContentRectInCanvas();
+        var selectionRect = new Rect(x, y, w, h);
+        var clippedRect = Rect.Intersect(selectionRect, videoRect);
+
+        if (clippedRect.IsEmpty || clippedRect.Width < 4 || clippedRect.Height < 4)
+        {
+            VM.StatusMessage = "Vùng chọn nằm ngoài khung video hiển thị. Hãy chọn lại.";
+            OcrSelectionRect.Visibility = Visibility.Collapsed;
+            OcrLabelBorder.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        // Vẽ lại rect theo vùng đã clip vào khung video thực tế.
+        Canvas.SetLeft(OcrSelectionRect, clippedRect.X);
+        Canvas.SetTop(OcrSelectionRect, clippedRect.Y);
+        OcrSelectionRect.Width = clippedRect.Width;
+        OcrSelectionRect.Height = clippedRect.Height;
+        OcrSelectionRect.Visibility = Visibility.Visible;
+
+        // Lưu OcrRegion theo tỉ lệ bên trong nội dung video (không tính viền đen letterbox).
+        _ocrRegion = OcrRegion.FromPixels(
+            pxX: clippedRect.X - videoRect.X,
+            pxY: clippedRect.Y - videoRect.Y,
+            pxW: clippedRect.Width,
+            pxH: clippedRect.Height,
+            controlWidth: videoRect.Width,
+            controlHeight: videoRect.Height
+        );
         VM.OcrRegion = _ocrRegion;
 
         // Hiện label "OCR Region" ở góc trên của hộp chọn
-        Canvas.SetLeft(OcrLabelBorder, x + 4);
-        Canvas.SetTop(OcrLabelBorder, y + 4);
+        Canvas.SetLeft(OcrLabelBorder, clippedRect.X + 4);
+        Canvas.SetTop(OcrLabelBorder, clippedRect.Y + 4);
         OcrLabelBorder.Visibility = Visibility.Visible;
 
-        VM.StatusMessage = $"✅ Đã chọn vùng OCR: {_ocrRegion}";
+        VM.StatusMessage = $"✅ OCR region: {_ocrRegion} (khung video: {videoRect.Width:0}x{videoRect.Height:0})";
 
         // Restore VideoView (ẩn overlay, hiện lại HWND)
         RestoreVideoView();
@@ -321,11 +351,19 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void PerformSeek()
     {
         if (_mediaPlayer == null) return;
-        long length = _mediaPlayer.Length;
+        
+        // Ưu tiên dùng cache _videoLength để seek vẫn hoạt động khi video Stopped
+        long length = _videoLength > 0 ? _videoLength : _mediaPlayer.Length;
         if (length <= 0) return;    // Chưa load xong, bỏ qua
 
         long targetMs = (long)(SeekSlider.Value * length);
         _mediaPlayer.Time = targetMs;
+
+        // Tự động play lại sau seek (quan trọng khi video vừa kết thúc và user muốn rewind)
+        if (!_mediaPlayer.IsPlaying)
+        {
+            _mediaPlayer.Play();
+        }
     }
 
     // ── Click dòng sub trên DataGrid → seek video đến timestamp ──
@@ -368,6 +406,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             BtnPlayPause.Icon = new Wpf.Ui.Controls.SymbolIcon(Wpf.Ui.Controls.SymbolRegular.Play24);
             VM.StatusMessage = "Đã dừng";
+            // Đảm bảo Slider vẫn có thể dùng để seek lại (rewind)
+            SeekSlider.IsEnabled = true;
         });
     }
 
@@ -378,11 +418,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             if (!_isSeeking && _mediaPlayer!.Length > 0)
             {
-                SeekSlider.Value = (double)e.Time / _mediaPlayer.Length;
+                // Cache độ dài video để dùng sau khi video Stopped
+                if (_videoLength == 0)
+                    _videoLength = _mediaPlayer.Length;
+
+                SeekSlider.Value = _videoLength > 0 ? (double)e.Time / _videoLength : 0;
 
                 // Format thời gian "mm:ss / mm:ss"
                 var cur = TimeSpan.FromMilliseconds(e.Time);
-                var tot = TimeSpan.FromMilliseconds(_mediaPlayer.Length);
+                var tot = TimeSpan.FromMilliseconds(_videoLength);
                 TxtTime.Text = $"{cur:mm\\:ss} / {tot:mm\\:ss}";
 
                 // Cập nhật vị trí cho ViewModel (dùng highlight sub)
@@ -403,9 +447,72 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         if (VM.SelectedSubtitle != null)
             SubtitleGrid.ScrollIntoView(VM.SelectedSubtitle);
 
-        // Cập nhật kích thước VideoView cho OcrRegion pixel conversion
+        // Kích thước khung hiển thị video bên trong control (loại trừ letterbox)
+        var videoRect = GetVideoContentRectInCanvas();
         VM.VideoViewSize = new System.Windows.Size(
-            VideoView.ActualWidth, VideoView.ActualHeight);
+            videoRect.Width, videoRect.Height);
+
+        // Kích thước nguồn video gốc để convert OcrRegion -> pixel gửi backend.
+        if (TryGetVideoSourceSize(out var sourceW, out var sourceH))
+        {
+            VM.VideoSourceSize = new System.Windows.Size(sourceW, sourceH);
+        }
+    }
+
+    private Rect GetVideoContentRectInCanvas()
+    {
+        double canvasW = OcrCanvas.ActualWidth;
+        double canvasH = OcrCanvas.ActualHeight;
+        if (canvasW <= 0 || canvasH <= 0)
+            return new Rect(0, 0, Math.Max(0, canvasW), Math.Max(0, canvasH));
+
+        if (!TryGetVideoSourceSize(out var sourceW, out var sourceH))
+            return new Rect(0, 0, canvasW, canvasH);
+
+        double videoAspect = sourceW / sourceH;
+        double canvasAspect = canvasW / canvasH;
+
+        if (canvasAspect > videoAspect)
+        {
+            // Canvas rộng hơn video -> có cột đen trái/phải.
+            double renderH = canvasH;
+            double renderW = renderH * videoAspect;
+            double offsetX = (canvasW - renderW) / 2.0;
+            return new Rect(offsetX, 0, renderW, renderH);
+        }
+
+        // Canvas cao hơn video -> có viền đen trên/dưới.
+        double fittedW = canvasW;
+        double fittedH = fittedW / videoAspect;
+        double offsetY = (canvasH - fittedH) / 2.0;
+        return new Rect(0, offsetY, fittedW, fittedH);
+    }
+
+    private bool TryGetVideoSourceSize(out double width, out double height)
+    {
+        width = 0;
+        height = 0;
+
+        if (_mediaPlayer == null)
+            return false;
+
+        try
+        {
+            uint w = 0;
+            uint h = 0;
+            if (_mediaPlayer.Size(0, ref w, ref h) && w > 0 && h > 0)
+            {
+                width = w;
+                height = h;
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
     }
 
     // ═══════════════════════════════════════════════

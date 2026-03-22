@@ -59,6 +59,11 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public System.Windows.Size VideoViewSize { get; set; }
 
+    /// <summary>
+    /// Kích thước nguồn video gốc (pixel). Ưu tiên dùng để convert crop gửi backend.
+    /// </summary>
+    public System.Windows.Size VideoSourceSize { get; set; }
+
     // =====================================================================
     // SUBTITLE DATA
     // =====================================================================
@@ -222,10 +227,14 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        // Chuyển OcrRegion (tỉ lệ) → pixel coords dựa trên kích thước VideoView
-        // Nếu VideoViewSize chưa có → fallback về full frame [0,0,0,0]
-        var regionPixels = VideoViewSize.Width > 0
-            ? OcrRegion.ToPixels(VideoViewSize.Width, VideoViewSize.Height)
+        // Chuyển OcrRegion (tỉ lệ) -> pixel coords theo kích thước video gốc.
+        // Nếu chưa đọc được size nguồn thì fallback về size hiển thị.
+        var targetSize = VideoSourceSize.Width > 0 && VideoSourceSize.Height > 0
+            ? VideoSourceSize
+            : VideoViewSize;
+
+        var regionPixels = targetSize.Width > 0
+            ? OcrRegion.ToPixels(targetSize.Width, targetSize.Height)
             : new[] { 0, 0, 0, 0 };
 
         var task = await Api.StartOcrAsync(VideoPath, regionPixels);
