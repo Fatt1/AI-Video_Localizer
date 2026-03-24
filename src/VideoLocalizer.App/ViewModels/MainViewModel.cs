@@ -319,24 +319,37 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            await foreach (var evt in Api.StreamTaskAsync(taskId, ct))
+            while (!ct.IsCancellationRequested)
             {
+                var status = await Api.GetTaskStatusAsync(taskId, ct);
+                if (status == null)
+                {
+                    StatusMessage = "Đang chờ backend phản hồi trạng thái...";
+                    await Task.Delay(500, ct);
+                    continue;
+                }
+
                 // Cập nhật progress và message trên UI
-                TaskProgress = evt.Progress;
-                StatusMessage = evt.Message;
+                TaskProgress = status.Progress;
+                if (!string.IsNullOrWhiteSpace(status.Message))
+                    StatusMessage = status.Message;
 
-                if (evt.Type == "complete")
+                if (status.Status == "completed")
                 {
-                    // Trả kết quả cho caller (thường là đường dẫn SRT)
-                    onComplete?.Invoke(evt.Result?.SrtPath);
+                    onComplete?.Invoke(status.Result?.SrtPath);
                     break;
                 }
 
-                if (evt.Type == "error")
+                if (status.Status is "failed" or "cancelled" or "error")
                 {
-                    StatusMessage = $"Lỗi: {evt.Message}";
+                    var err = !string.IsNullOrWhiteSpace(status.Error)
+                        ? status.Error
+                        : status.Message;
+                    StatusMessage = $"Lỗi: {err}";
                     break;
                 }
+
+                await Task.Delay(500, ct);
             }
         }
         catch (OperationCanceledException)

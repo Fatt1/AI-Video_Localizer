@@ -71,3 +71,25 @@ public class HealthResponse
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
 }
+
+/// <summary>Response GET /api/v1/tasks/{taskId}/status</summary>
+public class TaskStatusResponse
+{
+    [JsonPropertyName("task_id")]
+    public string TaskId { get; set; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("progress")]
+    public int Progress { get; set; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+
+    [JsonPropertyName("result")]
+    public SseResult? Result { get; set; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+}

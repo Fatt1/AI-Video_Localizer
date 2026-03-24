@@ -207,6 +207,28 @@ public class ApiService
         }
     }
 
+    /// <summary>
+    /// GET /api/v1/tasks/{taskId}/status — polling trạng thái task.
+    /// Dùng như fallback/primary khi SSE không ổn định ở client.
+    /// </summary>
+    public async Task<TaskStatusResponse?> GetTaskStatusAsync(string taskId, CancellationToken ct = default)
+    {
+        try
+        {
+            var resp = await _http.GetAsync($"{_baseUrl}/api/v1/tasks/{taskId}/status", ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<TaskStatusResponse>(_jsonOpts, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // =====================================================================
     // PRIVATE HELPERS
     // =====================================================================
