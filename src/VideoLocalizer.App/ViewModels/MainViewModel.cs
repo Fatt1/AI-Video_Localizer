@@ -211,6 +211,60 @@ public partial class MainViewModel : ObservableObject
     }
 
     // =====================================================================
+    // SUBTITLE EDITING COMMANDS
+    // =====================================================================
+
+    /// <summary>
+    /// Chèn subtitle mới TRƯỚC entry chỉ định.
+    /// </summary>
+    public void AddSubtitleBefore(SubtitleEntry target, SubtitleEntry newEntry)
+    {
+        int idx = Subtitles.IndexOf(target);
+        if (idx < 0) idx = 0;
+        Subtitles.Insert(idx, newEntry);
+        ReIndexSubtitles();
+        SelectedSubtitle = newEntry;
+        StatusMessage = $"Đã thêm subtitle trước dòng {idx + 1}";
+    }
+
+    /// <summary>
+    /// Chèn subtitle mới SAU entry chỉ định.
+    /// </summary>
+    public void AddSubtitleAfter(SubtitleEntry target, SubtitleEntry newEntry)
+    {
+        int idx = Subtitles.IndexOf(target);
+        int insertAt = (idx >= 0) ? idx + 1 : Subtitles.Count;
+        Subtitles.Insert(insertAt, newEntry);
+        ReIndexSubtitles();
+        SelectedSubtitle = newEntry;
+        StatusMessage = $"Đã thêm subtitle sau dòng {idx + 1}";
+    }
+
+    /// <summary>
+    /// Xóa subtitle entry chỉ định.
+    /// </summary>
+    public void DeleteSubtitle(SubtitleEntry target)
+    {
+        int idx = Subtitles.IndexOf(target);
+        if (idx < 0) return;
+        Subtitles.Remove(target);
+        ReIndexSubtitles();
+        // Chọn dòng kế tiếp (hoặc dòng cuối nếu xóa dòng cuối)
+        if (Subtitles.Count > 0)
+            SelectedSubtitle = Subtitles[Math.Min(idx, Subtitles.Count - 1)];
+        StatusMessage = $"Đã xóa subtitle #{idx + 1}";
+    }
+
+    /// <summary>
+    /// Đặt lại số thứ tự Index (1-based) cho tất cả subtitle sau insert/delete.
+    /// </summary>
+    private void ReIndexSubtitles()
+    {
+        for (int i = 0; i < Subtitles.Count; i++)
+            Subtitles[i].Index = i + 1;
+    }
+
+    // =====================================================================
     // STEP 6: API COMMANDS (Async + SSE)
     // =====================================================================
 

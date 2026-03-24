@@ -353,7 +353,18 @@
                           SelectionMode="Single"
                           GridLinesVisibility="Horizontal"
                           MouseDoubleClick="SubtitleGrid_MouseDoubleClick"
+                          KeyDown="SubtitleGrid_KeyDown"
                           Margin="6,4,6,6">
+
+                    <!-- Context menu: click chuột phải trên dòng -->
+                    <DataGrid.ContextMenu>
+                        <ContextMenu Opened="SubtitleContextMenu_Opened">
+                            <MenuItem Name="CtxAddBefore" Header="➕ Thêm trước" Click="CtxAddBefore_Click"/>
+                            <MenuItem Name="CtxAddAfter"  Header="➕ Thêm sau"   Click="CtxAddAfter_Click"/>
+                            <Separator/>
+                            <MenuItem Name="CtxDelete"    Header="🗑 Xóa"         Click="CtxDelete_Click"/>
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
 
                     <DataGrid.Columns>
                         <!-- Cột #: số thứ tự, không edit, width nhỏ -->
@@ -362,19 +373,33 @@
                                            IsReadOnly="True"
                                            Width="40"/>
 
-                        <!-- Cột Start: thời gian bắt đầu, format qua converter -->
+                        <!-- Cột Start: Editable inline — bấm F4 để stamp vị trí video -->
                         <DataGridTextColumn Header="Bắt đầu"
                                            Binding="{Binding StartTime,
-                                               Converter={StaticResource TimeSpanConverter}}"
-                                           IsReadOnly="True"
-                                           Width="90"/>
+                                               Converter={StaticResource TimeSpanConverter},
+                                               UpdateSourceTrigger=LostFocus}"
+                                           IsReadOnly="False"
+                                           Width="90">
+                            <DataGridTextColumn.EditingElementStyle>
+                                <Style TargetType="TextBox">
+                                    <Setter Property="FontFamily" Value="Consolas"/>
+                                </Style>
+                            </DataGridTextColumn.EditingElementStyle>
+                        </DataGridTextColumn>
 
-                        <!-- Cột End -->
+                        <!-- Cột End: Editable inline — bấm F4 để stamp vị trí video -->
                         <DataGridTextColumn Header="Kết thúc"
                                            Binding="{Binding EndTime,
-                                               Converter={StaticResource TimeSpanConverter}}"
-                                           IsReadOnly="True"
-                                           Width="90"/>
+                                               Converter={StaticResource TimeSpanConverter},
+                                               UpdateSourceTrigger=LostFocus}"
+                                           IsReadOnly="False"
+                                           Width="90">
+                            <DataGridTextColumn.EditingElementStyle>
+                                <Style TargetType="TextBox">
+                                    <Setter Property="FontFamily" Value="Consolas"/>
+                                </Style>
+                            </DataGridTextColumn.EditingElementStyle>
+                        </DataGridTextColumn>
 
                         <!-- Cột Text: EDITABLE — user có thể sửa trực tiếp -->
                         <DataGridTextColumn Header="Nội dung"

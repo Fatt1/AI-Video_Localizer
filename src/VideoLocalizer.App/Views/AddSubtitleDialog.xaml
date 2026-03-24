@@ -1,0 +1,98 @@
+<!-- Views/AddSubtitleDialog.xaml -->
+<!-- Dialog nhập thông tin subtitle mới: StartTime, EndTime, Text -->
+<ui:FluentWindow
+    x:Class="VideoLocalizer.Views.AddSubtitleDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    Title="Thêm Subtitle"
+    Width="420" Height="260"
+    ResizeMode="NoResize"
+    WindowStartupLocation="CenterOwner"
+    ShowInTaskbar="False"
+    ExtendsContentIntoTitleBar="True">
+
+    <ui:FluentWindow.Resources>
+        <Style TargetType="Label">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Width" Value="80"/>
+        </Style>
+        <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+        </Style>
+    </ui:FluentWindow.Resources>
+
+    <Grid Margin="16,8,16,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/> <!-- Title bar spacer -->
+            <RowDefinition Height="Auto"/> <!-- Start -->
+            <RowDefinition Height="Auto"/> <!-- End -->
+            <RowDefinition Height="*"/>    <!-- Text -->
+            <RowDefinition Height="Auto"/> <!-- Buttons -->
+        </Grid.RowDefinitions>
+
+        <!-- Spacer vì ExtendsContentIntoTitleBar -->
+        <ui:TitleBar Grid.Row="0" Title="Thêm Subtitle" Margin="-16,-8,-16,0"/>
+
+        <!-- Bắt đầu -->
+        <Grid Grid.Row="1" Margin="0,12,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="80"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Label Grid.Column="0" Content="Bắt đầu:"/>
+            <TextBox Grid.Column="1"
+                     Name="TxtStart"
+                     ToolTip="Định dạng: 00:00:00,000"/>
+            <Button Grid.Column="2" Content="📍" Margin="4,0,0,0" Padding="6,4"
+                    ToolTip="Điền vị trí video hiện tại"
+                    Name="BtnStampStart" Click="BtnStampStart_Click"
+                    VerticalAlignment="Center"/>
+        </Grid>
+
+        <!-- Kết thúc -->
+        <Grid Grid.Row="2" Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="80"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Label Grid.Column="0" Content="Kết thúc:"/>
+            <TextBox Grid.Column="1"
+                     Name="TxtEnd"
+                     ToolTip="Định dạng: 00:00:00,000"/>
+            <Button Grid.Column="2" Content="📍" Margin="4,0,0,0" Padding="6,4"
+                    ToolTip="Điền vị trí video hiện tại"
+                    Name="BtnStampEnd" Click="BtnStampEnd_Click"
+                    VerticalAlignment="Center"/>
+        </Grid>
+
+        <!-- Nội dung -->
+        <Grid Grid.Row="3" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="80"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Label Grid.Column="0" Content="Nội dung:" VerticalAlignment="Top" Margin="0,6,0,0"/>
+            <TextBox Grid.Column="1"
+                     Name="TxtContent"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"
+                     FontFamily="Segoe UI" FontSize="13"
+                     MinHeight="50"
+                     KeyDown="TxtContent_KeyDown"/>
+        </Grid>
+
+        <!-- Buttons -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="BtnOk" Content="OK" Width="80" Margin="0,0,8,0"
+                    IsDefault="True" Click="BtnOk_Click"/>
+            <Button Name="BtnCancel" Content="Hủy" Width="80"
+                    IsCancel="True" Click="BtnCancel_Click"/>
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

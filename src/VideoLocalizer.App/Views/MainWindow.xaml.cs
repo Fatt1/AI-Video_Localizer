@@ -516,6 +516,150 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
 
     // ═══════════════════════════════════════════════
+    // SUBTITLE CONTEXT MENU HANDLERS
+    // ═══════════════════════════════════════════════
+
+    /// <summary>
+    /// Cập nhật trạng thái menu Xóa: chỉ enable khi có dòng đang chọn
+    /// </summary>
+    private void SubtitleContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        bool hasSelection = VM.SelectedSubtitle != null;
+        CtxAddBefore.IsEnabled = hasSelection || VM.Subtitles.Count == 0;
+        CtxAddAfter.IsEnabled  = hasSelection || VM.Subtitles.Count == 0;
+        CtxDelete.IsEnabled    = hasSelection;
+    }
+
+    /// <summary>
+    /// Context menu "Thêm trước": mở dialog rồi chèn entry mới trước dòng đang chọn
+    /// </summary>
+    private void CtxAddBefore_Click(object sender, RoutedEventArgs e)
+    {
+        var target = VM.SelectedSubtitle;
+        var newEntry = ShowAddDialog();
+        if (newEntry == null) return;
+
+        if (target != null)
+            VM.AddSubtitleBefore(target, newEntry);
+        else
+        {
+            // Danh sách rỗng — thêm vào đầu
+            VM.Subtitles.Add(newEntry);
+            VM.SelectedSubtitle = newEntry;
+        }
+    }
+
+    /// <summary>
+    /// Context menu "Thêm sau": mở dialog rồi chèn entry mới sau dòng đang chọn
+    /// </summary>
+    private void CtxAddAfter_Click(object sender, RoutedEventArgs e)
+    {
+        var target = VM.SelectedSubtitle;
+        var newEntry = ShowAddDialog();
+        if (newEntry == null) return;
+
+        if (target != null)
+            VM.AddSubtitleAfter(target, newEntry);
+        else
+        {
+            VM.Subtitles.Add(newEntry);
+            VM.SelectedSubtitle = newEntry;
+        }
+    }
+
+    /// <summary>
+    /// Context menu "Xóa": xóa dòng đang chọn
+    /// </summary>
+    private void CtxDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var target = VM.SelectedSubtitle;
+        if (target == null) return;
+
+        var answer = MessageBox.Show(
+            $"Xóa subtitle #{target.Index}?\n\"{target.Text}\"",
+            "Xác nhận xóa",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (answer == MessageBoxResult.Yes)
+            VM.DeleteSubtitle(target);
+    }
+
+    /// <summary>
+    /// Mở AddSubtitleDialog với StartTime = vị trí video hiện tại.
+    /// Trả về SubtitleEntry mới hoặc null nếu user hủy.
+    /// </summary>
+    private SubtitleEntry? ShowAddDialog()
+    {
+        var dialog = new AddSubtitleDialog(_mediaPlayer?.Time ?? 0)
+        {
+            Owner = this
+        };
+        return dialog.ShowDialog() == true ? dialog.Result : null;
+    }
+
+    // ═══════════════════════════════════════════════
+    // F4: STAMP CURRENT VIDEO POSITION → StartTime / EndTime
+    // ═══════════════════════════════════════════════
+
+    /// <summary>
+    /// F4 khi DataGrid đang focus:
+    ///  - Nếu đang edit cột StartTime hoặc EndTime → ghi vị trí video hiện tại vào ô đó
+    ///  - Nếu không đang edit → ghi vào EndTime của dòng đang chọn (tiện nhất khi xem video)
+    ///
+    /// Hướng dẫn dùng:
+    ///   1. Double-click vào ô EndTime → cell vào chế độ edit
+    ///   2. Play video, lắng nghe đến lúc subtitle kết thúc
+    ///   3. Bấm F4 → End time được điền ngay lập tức
+    /// </summary>
+    private void SubtitleGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.F4) return;
+
+        var selected = VM.SelectedSubtitle;
+        if (selected == null) return;
+
+        long posMs = _mediaPlayer?.Time ?? 0;
+        var  posTs = TimeSpan.FromMilliseconds(posMs);
+
+        // Kiểm tra cell nào đang được edit
+        var editingColumn = SubtitleGrid.CurrentColumn;
+        if (editingColumn != null)
+        {
+            string? header = editingColumn.Header?.ToString();
+
+            if (header == "Bắt đầu")
+            {
+                // Kết thúc edit hiện tại → cập nhật giá trị mới → vào edit lại
+                SubtitleGrid.CommitEdit(DataGridEditingUnit.Cell, exitEditingMode: true);
+                selected.StartTime = posTs;
+                VM.StatusMessage = $"StartTime → {FormatTs(posTs)} (F4)";
+                e.Handled = true;
+                return;
+            }
+
+            if (header == "Kết thúc")
+            {
+                SubtitleGrid.CommitEdit(DataGridEditingUnit.Cell, exitEditingMode: true);
+                selected.EndTime = posTs;
+                VM.StatusMessage = $"EndTime → {FormatTs(posTs)} (F4)";
+                e.Handled = true;
+                return;
+            }
+        }
+
+        // Không đang edit cụ thể → mặc định stamp vào EndTime
+        SubtitleGrid.CommitEdit(DataGridEditingUnit.Row, exitEditingMode: true);
+        selected.EndTime = posTs;
+        VM.StatusMessage = $"EndTime → {FormatTs(posTs)} (F4)";
+        e.Handled = true;
+    }
+
+    /// <summary>Format TimeSpan → "hh:mm:ss,fff" để hiển thị status</summary>
+    private static string FormatTs(TimeSpan ts) =>
+        $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
+
+    // ═══════════════════════════════════════════════
     // SUBTITLE SYNC: double-click dòng sub → seek video
     // ═══════════════════════════════════════════════
 
