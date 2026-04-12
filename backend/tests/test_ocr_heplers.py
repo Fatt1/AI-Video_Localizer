@@ -7,6 +7,7 @@ from services.ocr_service import (
     compute_hash,
     frames_to_srt,
     _should_reuse_ocr_result,
+    _texts_are_same,
     post_process_ocr_entries,
 )
 import tempfile, os
@@ -124,3 +125,35 @@ def test_post_process_typing_merge_has_duration_cap():
 
     # Nếu không có cap, toàn bộ 7 frame sẽ bị gộp thành 1 block.
     assert len(processed) >= 2
+
+
+def test_texts_are_same_when_only_punctuation_differs():
+    """Khác nhau dấu ngoặc/quote nhưng cùng nội dung thì vẫn coi là 1 câu."""
+    a = "因为她这次要请的是「将军神」"
+    b = "因为她这次要请的是[将军神]"
+    assert _texts_are_same(a, b) is True
+
+
+def test_post_process_keeps_single_frame_subtitle_if_over_min_duration():
+    """Subtitle ngắn 0.25s (fps=4) không bị lọc mất khi min_duration=0.20s."""
+    entries = [
+        {"start": 4.225, "end": 4.475, "text": "要是没动了那种地方"},
+    ]
+
+    processed = post_process_ocr_entries(entries, min_duration=0.20)
+    assert len(processed) == 1
+
+
+def test_post_process_absorbs_short_near_duplicate_tail_blip():
+    """Case thực tế: dòng sau chỉ 1 frame và gần giống dòng trước thì coi là nhiễu."""
+    entries = [
+        {"start": 301.75, "end": 303.00, "text": "杀死动物献给神的巫术"},
+        {"start": 303.00, "end": 303.25, "text": "杀死动物献给神的术"},
+    ]
+
+    processed = post_process_ocr_entries(entries, min_duration=0.20)
+
+    assert len(processed) == 1
+    assert processed[0]["text"] == "杀死动物献给神的巫术"
+    assert processed[0]["start"] == 301.75
+    assert processed[0]["end"] == 303.25

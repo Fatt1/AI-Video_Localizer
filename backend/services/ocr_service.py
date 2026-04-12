@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import tempfile
 import os
+import unicodedata
 from pathlib import Path
 from difflib import SequenceMatcher
 
@@ -17,13 +18,85 @@ def _text_similarity(a: str, b: str) -> float:
         return 0.0
     return SequenceMatcher(None, a, b).ratio()
 
-def _texts_are_same(a: str | None, b: str | None, threshold: float = 0.80) -> bool:
+
+def _normalize_text(text: str) -> str:
+    """Chuẩn hóa text trước khi so sánh để giảm nhiễu do ký tự fullwidth/spacing."""
+    if not text:
+        return ""
+
+    normalized = unicodedata.normalize("NFKC", text)
+    return " ".join(normalized.split()).strip()
+
+
+def _text_core(text: str) -> str:
+    """Lấy lõi ký tự (loại bỏ punctuation/space) để so sánh câu gần giống."""
+    normalized = _normalize_text(text)
+    chars = []
+    for ch in normalized:
+        cat = unicodedata.category(ch)
+        # P*: punctuation, Z*: separators (space)
+        if cat.startswith("P") or cat.startswith("Z"):
+            continue
+        chars.append(ch)
+    return "".join(chars)
+
+def _texts_are_same(a: str | None, b: str | None, threshold: float = 0.84) -> bool:
     """So sánh fuzzy: 2 câu giống >= 80% → coi là cùng một câu thoại."""
     if a is None and b is None:
         return True
     if a is None or b is None:
         return False
-    return _text_similarity(a, b) >= threshold
+
+    a_core = _text_core(a)
+    b_core = _text_core(b)
+    if not a_core or not b_core:
+        return False
+
+    if a_core == b_core:
+        return True
+
+    # Typing effect (câu sau là phần mở rộng câu trước) không coi là "same".
+    if a_core in b_core or b_core in a_core:
+        return False
+
+    # OCR nhiễu ký tự: ưu tiên trường hợp cùng độ dài (thay nhầm 1-2 ký tự),
+    # tránh gộp nhầm với câu đang dần dài ra.
+    if len(a_core) == len(b_core) and _text_similarity(a_core, b_core) >= threshold:
+        return True
+
+    return False
+
+
+def _texts_are_near_variants(a: str | None, b: str | None, threshold: float = 0.90) -> bool:
+    """
+    So sánh "gần giống" cho mục đích khử nhiễu ngắn (1 frame).
+    Dùng ngưỡng cao để tránh gộp sai 2 câu khác nhau.
+    """
+    if a is None or b is None:
+        return False
+
+    a_core = _text_core(a)
+    b_core = _text_core(b)
+    if not a_core or not b_core:
+        return False
+
+    if a_core == b_core:
+        return True
+
+    sim = _text_similarity(a_core, b_core)
+    if sim < threshold:
+        return False
+
+    # Nếu là containment nhưng chênh lệch quá lớn thì có thể là typing/dòng khác.
+    if a_core in b_core or b_core in a_core:
+        shorter = min(len(a_core), len(b_core))
+        longer = max(len(a_core), len(b_core))
+        if longer == 0:
+            return False
+        if (shorter / longer) < 0.80:
+            return False
+
+    return True
 
 # --- CUDA / cuDNN DLL Path Injection ---
 # Thêm đường dẫn tới các file DLL của CUDA (như cudnn64_8.dll) từ package nvidia-* (nếu có cài)
@@ -107,7 +180,8 @@ def _should_reuse_ocr_result(
     prev_text: str | None,
     current_time: float,
     last_ocr_time: float | None,
-    max_reuse_window: float = 0.5,
+    max_reuse_window: float = 0.25,
+    max_hash_distance: int = 2,
 ) -> bool:
     """
     Chỉ tái sử dụng kết quả OCR trong cửa sổ thời gian ngắn.
@@ -115,7 +189,8 @@ def _should_reuse_ocr_result(
     """
     if prev_hash is None or not prev_text:
         return False
-    if not frames_are_same(prev_hash, curr_hash):
+    # Reuse chỉ khi hash THỰC SỰ gần nhau, tránh giữ text cũ lúc subtitle vừa đổi.
+    if not frames_are_same(prev_hash, curr_hash, threshold=max_hash_distance):
         return False
     if last_ocr_time is None:
         return False
@@ -159,9 +234,10 @@ from difflib import SequenceMatcher
 
 def post_process_ocr_entries(
     entries: list[dict],
-    min_duration: float = 0.35,
+    min_duration: float = 0.20,
     max_gap: float = 0.45,
     typing_merge_max_duration: float = 1.2,
+    short_glitch_max_duration: float = 0.28,
 ) -> list[dict]:
     """
     1. Gộp các block liên tiếp giống nhau hoặc bị gõ chữ (typing effect).
@@ -184,15 +260,26 @@ def post_process_ocr_entries(
 
         a_n = normalize_text(a)
         b_n = normalize_text(b)
+        a_core = _text_core(a_n)
+        b_core = _text_core(b_n)
+
         if a_n == b_n:
             return "exact"
 
+        # Cùng nội dung nhưng khác dấu ngoặc/quote/punctuation.
+        if a_core and b_core and a_core == b_core:
+            return "exact"
+
+        # OCR đôi khi lệch nhẹ 1-2 ký tự do nhòe/viền subtitle.
+        if _texts_are_same(a_n, b_n):
+            return "exact"
+
         # Hiệu ứng typing thường là câu sau chứa câu trước với phần đuôi mở rộng.
-        if (a_n in b_n or b_n in a_n) and abs(len(a_n) - len(b_n)) <= 12:
+        if (a_core in b_core or b_core in a_core) and abs(len(a_core) - len(b_core)) <= 12:
             return "typing"
 
         # Vẫn cho phép fuzzy nhưng threshold cao để tránh gộp sai.
-        if _text_similarity(a_n, b_n) >= 0.90:
+        if _text_similarity(a_core, b_core) >= 0.90:
             return "typing"
 
         return "different"
@@ -229,7 +316,25 @@ def post_process_ocr_entries(
     final_entries = []
 
     for e in merged:
-        if (e["end"] - e["start"]) > min_duration:
+        duration = e["end"] - e["start"]
+
+        # Khử "đuôi nhiễu" rất ngắn: ví dụ dòng 166 chỉ 1 frame và gần giống hệt dòng 165.
+        # Khi gặp trường hợp này, nối thời gian vào dòng trước và giữ text dòng trước.
+        if final_entries:
+            prev = final_entries[-1]
+            prev_duration = prev["end"] - prev["start"]
+            gap = e["start"] - prev["end"]
+
+            if (
+                duration <= short_glitch_max_duration
+                and prev_duration >= (2.0 * duration)
+                and gap <= max_gap
+                and _texts_are_near_variants(prev["text"], e["text"])
+            ):
+                prev["end"] = e["end"]
+                continue
+
+        if duration >= (min_duration - 1e-6):
             final_entries.append(e)
 
     return final_entries
@@ -316,7 +421,9 @@ async def run_ocr_pipeline(
         await task.update(90, f"Đã nhận diện {len(raw_entries)} frame có chữ. Đang gộp và lọc nhiễu...")
 
         # Bước 3: Thuật toán Gộp & Lọc nhiễu
-        entries = post_process_ocr_entries(raw_entries)
+        # Giữ được subtitle ngắn: min_duration phụ thuộc FPS (không dùng hằng số cứng 0.35s).
+        min_duration = max(0.12, min(0.22, 0.8 / max(fps, 0.1)))
+        entries = post_process_ocr_entries(raw_entries, min_duration=min_duration)
         
         # Lọc rỗng lặp lại cho chắc chắn
         entries = [e for e in entries if e["text"].strip()]
