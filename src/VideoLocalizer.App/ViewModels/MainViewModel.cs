@@ -101,6 +101,25 @@ public partial class MainViewModel : ObservableObject
     private string _glossaryText = string.Empty;
 
     // =====================================================================
+    // DUBBING SETTINGS (OmniVoice -> CapCut)
+    // =====================================================================
+
+    /// <summary>Danh sách voice clone lấy từ backend.</summary>
+    public ObservableCollection<VoiceClone> VoiceClones { get; } = new();
+
+    /// <summary>Voice clone đang chọn cho TTS.</summary>
+    [ObservableProperty]
+    private VoiceClone? _selectedVoice;
+
+    /// <summary>Tên project CapCut để tìm đúng draft folder.</summary>
+    [ObservableProperty]
+    private string _capcutProjectName = string.Empty;
+
+    /// <summary>Tốc độ đọc TTS (0.5x -> 2.0x).</summary>
+    [ObservableProperty]
+    private double _speechRate = 1.0;
+
+    // =====================================================================
     // PROGRESS / STATUS
     // =====================================================================
 
@@ -334,8 +353,78 @@ public partial class MainViewModel : ObservableObject
                 var entries = SubtitleService.Parse(translatedPath);
                 Subtitles.Clear();
                 foreach (var e in entries) Subtitles.Add(e);
-                StatusMessage = $"Dịch hoàn tất: {entries.Count} dòng";
+                StatusMessage = $"Dịch SRT hoàn tất: {entries.Count} dòng (chưa tạo audio CapCut)";
             }
+        });
+    }
+
+    /// <summary>Load lại danh sách voice clones từ backend.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunTask))]
+    private async Task RefreshVoices()
+    {
+        try
+        {
+            var voices = await Api.GetVoiceClonesAsync();
+            VoiceClones.Clear();
+
+            foreach (var voice in voices)
+                VoiceClones.Add(voice);
+
+            if (SelectedVoice == null && VoiceClones.Count > 0)
+                SelectedVoice = VoiceClones[0];
+
+            StatusMessage = $"Tìm thấy {voices.Count} voice clones";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Lỗi load voices: {ex.Message}";
+        }
+    }
+
+    /// <summary>Chạy dubbing: TTS bằng OmniVoice rồi inject audio vào CapCut project.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunTask))]
+    private async Task RunDubbing()
+    {
+        if (string.IsNullOrEmpty(CurrentSrtPath))
+        {
+            StatusMessage = "Vui lòng load SRT trước.";
+            return;
+        }
+
+        if (SelectedVoice == null)
+        {
+            StatusMessage = "Vui lòng chọn voice clone.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(CapcutProjectName))
+        {
+            StatusMessage = "Vui lòng nhập tên project CapCut.";
+            return;
+        }
+
+        if (SpeechRate < 0.5 || SpeechRate > 2.0)
+        {
+            StatusMessage = "Tốc độ đọc phải nằm trong khoảng 0.5x đến 2.0x.";
+            return;
+        }
+
+        var task = await Api.StartDubbingAsync(
+            srtPath: CurrentSrtPath,
+            voiceId: SelectedVoice.Id,
+            capcutProjectName: CapcutProjectName,
+            speechRate: SpeechRate);
+
+        if (task == null)
+        {
+            StatusMessage = "Lỗi: Không thể bắt đầu dubbing.";
+            return;
+        }
+
+        await StreamTaskProgress(task.TaskId, onComplete: _ =>
+        {
+            StatusMessage =
+                $"Đã chèn audio vào CapCut project '{CapcutProjectName}' (speed {SpeechRate:0.00}x)";
         });
     }
 
@@ -431,6 +520,8 @@ public partial class MainViewModel : ObservableObject
         // Thông báo lại CanExecute để enable/disable buttons
         RunOcrCommand.NotifyCanExecuteChanged();
         RunTranslateCommand.NotifyCanExecuteChanged();
+        RunDubbingCommand.NotifyCanExecuteChanged();
+        RefreshVoicesCommand.NotifyCanExecuteChanged();
         CancelCurrentTaskCommand.NotifyCanExecuteChanged();
     }
 

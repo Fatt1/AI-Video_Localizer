@@ -67,7 +67,7 @@
                         <MenuItem Header="Dịch SRT..." Name="MenuTranslate" Click="MenuTranslate_Click"/>
                         <Separator/>
                         <MenuItem Header="STT (Phase 2)" IsEnabled="False"/>
-                        <MenuItem Header="Dubbing (Phase 2)" IsEnabled="False"/>
+                        <MenuItem Header="Dubbing (OmniVoice -> CapCut)..." Name="MenuDubbing" Click="MenuDubbing_Click"/>
                     </MenuItem>
 
                     <!-- Settings Menu -->
@@ -264,6 +264,8 @@
                     <RowDefinition Height="Auto"/>
                     <!-- Toolbar (Load SRT, Save, Export) -->
                     <RowDefinition Height="Auto"/>
+                    <!-- Dubbing section -->
+                    <RowDefinition Height="Auto"/>
                     <!-- DataGrid (chiếm phần còn lại) -->
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
@@ -327,10 +329,10 @@
 
                     <!-- Nút dịch: bind vào RunTranslateCommand -->
                     <ui:Button Name="BtnTranslate"
-                               Content="Dịch"
+                               Content="Dịch SRT"
                                Command="{Binding RunTranslateCommand}"
                                Icon="{ui:SymbolIcon Translate24}"
-                               ToolTip="Dịch SRT sang tiếng Việt (Ollama)"
+                               ToolTip="Chỉ dịch SRT sang tiếng Việt (không tạo audio CapCut)"
                                Margin="0,0,4,0"/>
 
                     <Separator/>
@@ -344,10 +346,52 @@
                                ToolTip="Hủy task đang chạy"/>
                 </ToolBar>
 
+                <!-- ── Dubbing / OmniVoice Section ── -->
+                <GroupBox Grid.Row="3" Header="Dubbing (OmniVoice -> CapCut)"
+                          Margin="6,4,6,0" Padding="6,4">
+                    <StackPanel>
+                        <DockPanel Margin="0,0,0,6">
+                            <TextBlock Text="Voice:" Width="60" VerticalAlignment="Center"/>
+                            <ui:Button DockPanel.Dock="Right"
+                                       Icon="{ui:SymbolIcon ArrowSync24}"
+                                       Command="{Binding RefreshVoicesCommand}"
+                                       ToolTip="Refresh danh sách voice"
+                                       Margin="6,0,0,0"/>
+                            <ComboBox ItemsSource="{Binding VoiceClones}"
+                                      SelectedItem="{Binding SelectedVoice}"
+                                      DisplayMemberPath="Name"/>
+                        </DockPanel>
+
+                        <DockPanel Margin="0,0,0,6">
+                            <TextBlock Text="CapCut:" Width="60" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding CapcutProjectName, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Tên project trong CapCut"/>
+                        </DockPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Tốc độ:" Width="60" VerticalAlignment="Center"/>
+                            <Slider Minimum="0.5" Maximum="2.0" TickFrequency="0.05"
+                                    IsSnapToTickEnabled="False"
+                                    Value="{Binding SpeechRate, UpdateSourceTrigger=PropertyChanged}"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SpeechRate, StringFormat={}{0:0.00}x}"
+                                       Width="52" Margin="8,0,0,0"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <ui:Button Content="Tạo Audio -> CapCut"
+                                   Command="{Binding RunDubbingCommand}"
+                                   Icon="{ui:SymbolIcon Mic24}"
+                                   HorizontalAlignment="Stretch"
+                                   Appearance="Primary"
+                                   ToolTip="OmniVoice TTS + inject vào CapCut project"/>
+                    </StackPanel>
+                </GroupBox>
+
                 <!-- ── DataGrid: hiển thị subtitle entries ── -->
                 <!-- SelectedItem bind → ViewModel.SelectedSubtitle để sync với video -->
                 <!-- MouseDoubleClick: double-click dòng → seek video đến timestamp đó -->
-                <DataGrid Grid.Row="3"
+                <DataGrid Grid.Row="4"
                           Name="SubtitleGrid"
                           ItemsSource="{Binding Subtitles}"
                           SelectedItem="{Binding SelectedSubtitle}"

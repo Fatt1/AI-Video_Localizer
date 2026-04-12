@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import tempfile
 import os
+import sys
 import unicodedata
 from pathlib import Path
 from difflib import SequenceMatcher
@@ -98,36 +99,70 @@ def _texts_are_near_variants(a: str | None, b: str | None, threshold: float = 0.
 
     return True
 
-# --- CUDA / cuDNN DLL Path Injection ---
-# Thêm đường dẫn tới các file DLL của CUDA (như cudnn64_8.dll) từ package nvidia-* (nếu có cài)
-# vào biến môi trường PATH để PaddlePaddle có thể tìm thấy chúng trên Windows
-import site
-site_packages = site.getsitepackages()
-for sp in site_packages:
-    nvidia_dir = Path(sp) / "nvidia"
-    if nvidia_dir.exists():
-        for sub_dir in nvidia_dir.iterdir():
-            dll_bin_path = sub_dir / "bin"
-            if dll_bin_path.exists():
-                # Thêm vào os.environ["PATH"] và cả os.add_dll_directory (cho Python >= 3.8)
-                os.environ["PATH"] = str(dll_bin_path) + os.pathsep + os.environ["PATH"]
-                try:
-                    os.add_dll_directory(str(dll_bin_path))
-                except Exception:
-                    pass
-
-from paddleocr import PaddleOCR
 from core.task_manager import Task, TaskStatus
 from core.config import FFMPEG_PATH   # dùng path đã detect sẵn
 
 # Khởi tạo PaddleOCR một lần (load model tốn ~5s lần đầu)
 # Dùng PaddleOCR 2.7.x — API ổn định, không dùng PaddleX pipeline
 _ocr_engine = None
+_paddle_cuda_paths_initialized = False
+
+
+def _iter_nvidia_bin_dirs() -> list[Path]:
+    import site
+
+    bin_dirs: list[Path] = []
+    for sp in site.getsitepackages():
+        nvidia_dir = Path(sp) / "nvidia"
+        if not nvidia_dir.exists():
+            continue
+        for sub_dir in nvidia_dir.iterdir():
+            dll_bin_path = sub_dir / "bin"
+            if dll_bin_path.exists():
+                bin_dirs.append(dll_bin_path)
+    return bin_dirs
+
+
+def _ensure_paddle_cuda_dll_paths() -> None:
+    """
+    Register NVIDIA DLL directories for Paddle on Windows.
+
+    Important: Do not mutate os.environ['PATH'] globally here because that can
+    shadow PyTorch's own CUDA DLLs and break OmniVoice with WinError 127.
+    """
+    global _paddle_cuda_paths_initialized
+    if _paddle_cuda_paths_initialized:
+        return
+
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        _paddle_cuda_paths_initialized = True
+        return
+
+    for dll_bin_path in _iter_nvidia_bin_dirs():
+        try:
+            os.add_dll_directory(str(dll_bin_path))
+        except Exception:
+            # Ignore non-critical registration errors and let Paddle raise later if needed.
+            continue
+
+    _paddle_cuda_paths_initialized = True
 
 
 def get_ocr_engine():
     global _ocr_engine
     if _ocr_engine is None:
+        # Preload torch before registering Paddle CUDA paths to avoid DLL conflicts
+        # when both OCR (Paddle) and dubbing (OmniVoice/Torch) run in one process.
+        if "torch" not in sys.modules:
+            try:
+                import torch  # noqa: F401
+            except Exception:
+                pass
+
+        _ensure_paddle_cuda_dll_paths()
+
+        from paddleocr import PaddleOCR
+
         # use_angle_cls=True: xoay ảnh để detect text nghiêng
         # use_gpu=True: Dùng card đồ họa NVIDIA (đã cài paddlepaddle-gpu)
         _ocr_engine = PaddleOCR(

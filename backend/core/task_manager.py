@@ -68,6 +68,7 @@ class Task:
 
     async def fail(self, error: str):
         self.status = TaskStatus.FAILED
+        self.message = error
         self.error = error
         event = {
             "type": "error",

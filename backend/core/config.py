@@ -18,6 +18,10 @@ BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 TEMP_DIR = BASE_DIR / "temp"
 TEMP_DIR.mkdir(exist_ok=True)
 
+# Thư mục chứa các file voice clone cho OmniVoice
+VOICE_CLONES_DIR = BASE_DIR / "voice_clones"
+VOICE_CLONES_DIR.mkdir(exist_ok=True)
+
 # ── FFmpeg path ──
 # Ưu tiên: env var → shutil.which → các đường dẫn phổ biến Windows
 def _find_ffmpeg() -> str:

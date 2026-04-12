@@ -1,8 +1,12 @@
+# PyTorch CUDA 12.8 wheels (must keep torch/torchaudio/torchvision same build tag)
+--extra-index-url https://download.pytorch.org/whl/cu128
+
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 paddlepaddle-gpu==2.6.1
 paddleocr>=2.8.0
+numpy==1.26.4
 opencv-python>=4.9.0
 imagehash>=4.3.1
 Pillow>=10.3.0
@@ -10,3 +14,8 @@ pysrt>=1.1.2
 ffmpeg-python>=0.2.0
 ollama>=0.2.0
 httpx>=0.27.0
+omnivoice
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128
+torchvision==0.26.0+cu128
+torchcodec

@@ -110,6 +110,39 @@ public class ApiService
         return await PostTaskAsync("/api/v1/translate", payload);
     }
 
+    /// <summary>
+    /// GET /api/v1/tts/voices — lấy danh sách voice clones có sẵn.
+    /// </summary>
+    public async Task<List<VoiceClone>> GetVoiceClonesAsync()
+    {
+        var resp = await _http.GetAsync($"{_baseUrl}/api/v1/tts/voices");
+        resp.EnsureSuccessStatusCode();
+
+        var json = await resp.Content.ReadAsStringAsync();
+        var result = JsonSerializer.Deserialize<VoicesResponse>(json, _jsonOpts);
+        return result?.Voices ?? new List<VoiceClone>();
+    }
+
+    /// <summary>
+    /// POST /api/v1/dubbing — chạy pipeline TTS OmniVoice rồi inject vào CapCut.
+    /// </summary>
+    public async Task<TaskStartResponse?> StartDubbingAsync(
+        string srtPath,
+        string voiceId,
+        string capcutProjectName,
+        double speechRate = 1.0)
+    {
+        var payload = new
+        {
+            srt_path = srtPath,
+            voice_id = voiceId,
+            capcut_project_name = capcutProjectName,
+            speech_rate = speechRate,
+        };
+
+        return await PostTaskAsync("/api/v1/dubbing", payload);
+    }
+
     // =====================================================================
     // SSE STREAMING
     // =====================================================================

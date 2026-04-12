@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from services.dubbing_service import run_dubbing_pipeline
+
+
+@dataclass
+class _FakeSubRipTime:
+    ordinal: int
+
+
+@dataclass
+class _FakeSub:
+    text: str
+    start: _FakeSubRipTime
+    end: _FakeSubRipTime
+
+
+class _FakeTask:
+    def __init__(self, task_id: str = "task-1"):
+        self.task_id = task_id
+        self.fail = AsyncMock()
+        self.update = AsyncMock()
+        self.complete = AsyncMock()
+
+    def is_cancelled(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_dubbing_fails_with_detailed_error_when_all_lines_tts_fail(tmp_path: Path):
+    srt_path = tmp_path / "input.srt"
+    srt_path.write_text("dummy", encoding="utf-8")
+
+    task = _FakeTask("task-detail")
+    subs = [
+        _FakeSub("Xin chao", _FakeSubRipTime(0), _FakeSubRipTime(1000)),
+        _FakeSub("Ban khoe khong", _FakeSubRipTime(1500), _FakeSubRipTime(3000)),
+    ]
+
+    with patch("services.dubbing_service.pysrt.open", return_value=subs), patch(
+        "services.dubbing_service.get_clone_by_id",
+        return_value={"id": "voice-a", "ref_text": "sample transcript"},
+    ), patch("services.dubbing_service.find_draft_folder", return_value=tmp_path), patch(
+        "services.dubbing_service.synthesize_line",
+        side_effect=RuntimeError("model load failed"),
+    ), patch("services.dubbing_service.unload_tts_model"):
+        await run_dubbing_pipeline(
+            srt_path=str(srt_path),
+            voice_id="voice-a",
+            capcut_project_name="demo",
+            task=task,
+        )
+
+    task.fail.assert_awaited_once()
+    failure_message = task.fail.await_args.args[0]
+    assert "Lỗi mẫu" in failure_message
+    assert "model load failed" in failure_message
+    assert "2/2 dòng lỗi" in failure_message
+    task.complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dubbing_fails_early_when_voice_clone_is_missing(tmp_path: Path):
+    srt_path = tmp_path / "input.srt"
+    srt_path.write_text("dummy", encoding="utf-8")
+
+    task = _FakeTask("task-missing-voice")
+    subs = [_FakeSub("Xin chao", _FakeSubRipTime(0), _FakeSubRipTime(1000))]
+
+    with patch("services.dubbing_service.pysrt.open", return_value=subs), patch(
+        "services.dubbing_service.get_clone_by_id", return_value=None
+    ), patch(
+        "services.dubbing_service.list_voice_clones",
+        return_value=[{"id": "voice-a"}, {"id": "voice-b"}],
+    ), patch("services.dubbing_service.unload_tts_model"):
+        await run_dubbing_pipeline(
+            srt_path=str(srt_path),
+            voice_id="missing-voice",
+            capcut_project_name="demo",
+            task=task,
+        )
+
+    task.fail.assert_awaited_once()
+    failure_message = task.fail.await_args.args[0]
+    assert "missing-voice" in failure_message
+    assert "voice-a" in failure_message
+    task.complete.assert_not_awaited()

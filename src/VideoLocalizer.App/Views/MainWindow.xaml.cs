@@ -252,6 +252,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         MessageBox.Show("Translate feature coming in Step 6!", "Info");
     }
 
+    private void MenuDubbing_Click(object sender, RoutedEventArgs e)
+    {
+        if (VM.RunDubbingCommand.CanExecute(null))
+            VM.RunDubbingCommand.Execute(null);
+    }
+
     private void MenuSettings_Click(object sender, RoutedEventArgs e)
     {
         // TODO Step 10: mở SettingsWindow
