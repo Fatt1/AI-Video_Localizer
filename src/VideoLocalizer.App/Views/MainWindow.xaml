@@ -142,24 +142,28 @@
                     <vlc:VideoView Name="VideoView" Background="Black"/>
 
                     <!-- Placeholder overlay khi đang chọn vùng OCR.
-                         VideoView (HWND) bị ẩn → placeholder này hiện thay thế.
-                         Không dùng snapshot vì TakeSnapshot + file I/O gây lag.
-                         User biết subtitle ở đâu (thường đáy video) nên không cần xem frame. -->
-                    <Border Name="OcrPlaceholder"
-                            Background="#DD111111"
-                            Visibility="Collapsed">
-                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <TextBlock Text="🖱 Kéo chuột để khoanh vùng có subtitle"
-                                       Foreground="White" FontSize="15" FontWeight="SemiBold"
-                                       HorizontalAlignment="Center"/>
-                            <TextBlock Text="(thường ở 70–90% chiều cao video)"
-                                       Foreground="#AAAAAA" FontSize="12" Margin="0,6,0,0"
-                                       HorizontalAlignment="Center"/>
-                            <TextBlock Text="Nhấn Esc hoặc bỏ tick menu để hủy"
-                                       Foreground="#888888" FontSize="11" Margin="0,4,0,0"
-                                       HorizontalAlignment="Center"/>
-                        </StackPanel>
-                    </Border>
+                         Khi vào OCR mode, hiển thị snapshot frame để user chọn chính xác vị trí subtitle. -->
+                    <Grid Name="OcrPlaceholder"
+                          Visibility="Collapsed">
+                        <Image Name="OcrSnapshotImage"
+                               Stretch="Uniform"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"/>
+
+                        <Border Background="#44000000">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="🖱 Kéo chuột để khoanh vùng có subtitle"
+                                           Foreground="White" FontSize="15" FontWeight="SemiBold"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="(thường ở 70–90% chiều cao video)"
+                                           Foreground="#AAAAAA" FontSize="12" Margin="0,6,0,0"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="Nhấn Esc hoặc bỏ tick menu để hủy"
+                                           Foreground="#888888" FontSize="11" Margin="0,4,0,0"
+                                           HorizontalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
 
                     <!-- Canvas overlay: dùng để user kéo chọn vùng OCR
                          IsHitTestVisible=False khi không ở OCR mode → không block click video -->
@@ -352,6 +356,7 @@
                           CanUserDeleteRows="False"
                           SelectionMode="Single"
                           GridLinesVisibility="Horizontal"
+                          SelectionChanged="SubtitleGrid_SelectionChanged"
                           MouseDoubleClick="SubtitleGrid_MouseDoubleClick"
                           KeyDown="SubtitleGrid_KeyDown"
                           Margin="6,4,6,6">

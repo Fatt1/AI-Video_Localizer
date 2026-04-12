@@ -7,15 +7,19 @@ using VlcMediaPlayer = LibVLCSharp.Shared.MediaPlayer;
 using LibVLCSharp.Shared;           // Vẫn cần cho các types khác (Media, Core...)
 
 using System.ComponentModel;
+using System.IO;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;         // Rectangle dùng Brush, không dùng MediaPlayer
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using VideoLocalizer.Models;
 using VideoLocalizer.ViewModels;
+using IoPath = System.IO.Path;
 
 namespace VideoLocalizer.Views;
 
@@ -30,6 +34,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     // ── Để tránh SeekSlider loop khi code cập nhật giá trị ──
     private bool _isSeeking = false;
+
+    // ── Đánh dấu lúc SyncTimer đang update selection để tránh loop khi SelectionChanged ──
+    private bool _isSyncTimerUpdating = false;
 
     // ── Cache độ dài video (ms) để seek vẫn hoạt động khi video Stopped ──
     private long _videoLength = 0;
@@ -117,21 +124,19 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         Application.Current.Shutdown();
     }
 
-    private void MenuSelectOcrRegion_Click(object sender, RoutedEventArgs e)
+    private async void MenuSelectOcrRegion_Click(object sender, RoutedEventArgs e)
     {
         _isOcrSelectionMode = MenuSelectOcrRegion.IsChecked;
 
         if (_isOcrSelectionMode)
         {
-            // Giải pháp đơn giản cho AirSpace problem (không cần snapshot):
-            // 1. Ẩn VideoView (native HWND) ngay lập tức — synchronous, không lag
-            VideoView.Visibility    = Visibility.Hidden;
-            // 2. Hiện dark overlay với hướng dẫn
+            _mediaPlayer?.Pause();
+            await TryShowOcrSnapshotAsync();
+
+            VideoView.Visibility = Visibility.Hidden;
             OcrPlaceholder.Visibility = Visibility.Visible;
-            // 3. Bật Canvas nhận mouse events (hoạt động vì không còn HWND bên dưới)
             OcrCanvas.IsHitTestVisible = true;
 
-            _mediaPlayer?.Pause(); // Pause nhẹ nhàng, không block UI
             VM.StatusMessage = "🖱 Kéo chuột để chọn vùng subtitle, thả chuột khi xong";
         }
         else
@@ -141,11 +146,93 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
+    private async Task TryShowOcrSnapshotAsync()
+    {
+        OcrSnapshotImage.Source = null;
+
+        if (_mediaPlayer == null)
+            return;
+
+        var snapshotPath = IoPath.Combine(
+            IoPath.GetTempPath(),
+            $"avl_ocr_snapshot_{Guid.NewGuid():N}.png");
+
+        try
+        {
+            // TakeSnapshot đôi khi block khá lâu trên UI thread (nhất là khi VLC backend bận),
+            // nên chạy ở thread nền và giới hạn thời gian chờ để tránh đơ cửa sổ.
+            var takeSnapshotTask = Task.Run(() => _mediaPlayer.TakeSnapshot(0, snapshotPath, 0, 0));
+            var completedTask = await Task.WhenAny(takeSnapshotTask, Task.Delay(800));
+
+            if (completedTask != takeSnapshotTask)
+                return;
+
+            bool snapshotOk = await takeSnapshotTask;
+            if (!snapshotOk)
+                return;
+
+            // Chờ file snapshot sẵn sàng đọc (writer có thể chưa flush xong ngay lập tức).
+            byte[]? imageBytes = null;
+            for (int i = 0; i < 20; i++)
+            {
+                if (File.Exists(snapshotPath))
+                {
+                    try
+                    {
+                        imageBytes = await File.ReadAllBytesAsync(snapshotPath);
+                        if (imageBytes.Length > 0)
+                            break;
+                    }
+                    catch (IOException)
+                    {
+                        // Retry ở vòng lặp sau.
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // Retry ở vòng lặp sau.
+                    }
+                }
+
+                await Task.Delay(25);
+            }
+
+            if (imageBytes == null || imageBytes.Length == 0)
+                return;
+
+            using var stream = new MemoryStream(imageBytes);
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            OcrSnapshotImage.Source = bitmap;
+        }
+        catch
+        {
+            OcrSnapshotImage.Source = null;
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(snapshotPath))
+                    File.Delete(snapshotPath);
+            }
+            catch
+            {
+                // Bỏ qua lỗi cleanup file tạm.
+            }
+        }
+    }
+
     /// <summary>Restore VideoView, ẩn overlay — dùng sau khi chọn xong hoặc hủy</summary>
     private void RestoreVideoView()
     {
         OcrCanvas.IsHitTestVisible    = false;
         OcrPlaceholder.Visibility     = Visibility.Collapsed;
+        OcrSnapshotImage.Source       = null;
         VideoView.Visibility          = Visibility.Visible;
         MenuSelectOcrRegion.IsChecked = false;
         _isOcrSelectionMode           = false;
@@ -370,7 +457,15 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void SubtitleGrid_SelectionChanged(object sender,
         System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        // Xử lý ở Step 8 (video sync)
+        if (_mediaPlayer == null) return;
+        if (VM.SelectedSubtitle == null) return;
+        if (_isSyncTimerUpdating) return;
+
+        long targetMs = (long)VM.SelectedSubtitle.StartTime.TotalMilliseconds;
+        _mediaPlayer.Time = targetMs;
+
+        if (_mediaPlayer.IsPlaying)
+            _mediaPlayer.Pause();
     }
 
     // BtnRunOcr và BtnTranslate giờ dùng Command binding (RunOcrCommand / RunTranslateCommand)
@@ -441,7 +536,18 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void SyncTimer_Tick(object? sender, EventArgs e)
     {
-        VM.SyncSubtitleHighlight();
+        if (_mediaPlayer != null && _mediaPlayer.IsPlaying)
+        {
+            _isSyncTimerUpdating = true;
+            try
+            {
+                VM.SyncSubtitleHighlight();
+            }
+            finally
+            {
+                _isSyncTimerUpdating = false;
+            }
+        }
 
         // Cuộn DataGrid để luôn hiện dòng đang active
         if (VM.SelectedSubtitle != null)
