@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from services.dubbing_service import run_dubbing_pipeline
+from services.dubbing_service import (
+    _fit_audio_to_slot,
+    _normalize_tts_text,
+    run_dubbing_pipeline,
+)
 
 
 @dataclass
@@ -30,6 +34,38 @@ class _FakeTask:
 
     def is_cancelled(self) -> bool:
         return False
+
+
+def test_normalize_tts_text_collapses_newlines_and_spaces():
+    assert _normalize_tts_text("  cay \n nhung   con\tkha dai  ") == "cay nhung con kha dai"
+
+
+def test_fit_audio_to_slot_caps_extra_atempo():
+    fake_path = Path("dummy.wav")
+    observed_speeds = []
+    durations = iter([3_000_000, 2_650_000, 2_540_000])
+
+    def fake_get_audio_duration_us(_):
+        return next(durations)
+
+    def fake_apply_speed_to_existing_audio(_, speed):
+        observed_speeds.append(speed)
+
+    with patch("services.dubbing_service.get_audio_duration_us", side_effect=fake_get_audio_duration_us), patch(
+        "services.dubbing_service.apply_speed_to_existing_audio",
+        side_effect=fake_apply_speed_to_existing_audio,
+    ):
+        duration_us, effective_rate, adjusted = _fit_audio_to_slot(
+            audio_path=fake_path,
+            slot_us=2_500_000,
+            base_speech_rate=1.3,
+        )
+
+    assert adjusted is True
+    assert duration_us == 2_650_000
+    assert len(observed_speeds) == 1
+    assert observed_speeds[0] <= 1.18
+    assert effective_rate > 1.3
 
 
 @pytest.mark.asyncio

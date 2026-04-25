@@ -28,6 +28,14 @@ class Task:
         self._cancel_flag = False
         self._subscribers: list[asyncio.Queue] = []
 
+    def _log_event(self, event_type: str, message: str, *, progress: int | None = None, status: TaskStatus | None = None):
+        status_text = (status or self.status).value if isinstance((status or self.status), TaskStatus) else str(status or self.status)
+        progress_text = f"{progress}%" if progress is not None else f"{self.progress}%"
+        print(
+            f"[Task {self.task_type}:{self.task_id}] {event_type.upper()} "
+            f"[{status_text}] [{progress_text}] {message}"
+        )
+
     def is_cancelled(self) -> bool:
         return self._cancel_flag
 
@@ -40,6 +48,7 @@ class Task:
         self.message = message
         if status:
             self.status = status
+        self._log_event("progress", message, progress=progress, status=status)
         event = {
             "type": "progress",
             "task_id": self.task_id,
@@ -54,6 +63,7 @@ class Task:
         self.status = TaskStatus.COMPLETED
         self.progress = 100
         self.result = result
+        self._log_event("complete", "Hoàn thành!", progress=100, status=TaskStatus.COMPLETED)
         event = {
             "type": "complete",
             "task_id": self.task_id,
@@ -70,6 +80,7 @@ class Task:
         self.status = TaskStatus.FAILED
         self.message = error
         self.error = error
+        self._log_event("error", error, progress=self.progress, status=TaskStatus.FAILED)
         event = {
             "type": "error",
             "task_id": self.task_id,

@@ -21,6 +21,18 @@ from services.tts_service import (
 
 
 _ERROR_SAMPLE_LIMIT = 3
+_FIT_HEADROOM_RATIO = 1.005
+_MAX_ATEMPO_FACTOR_PER_LINE = 1.18
+
+
+def _normalize_tts_text(text: str) -> str:
+    """
+    Normalize subtitle text before sending it to TTS.
+
+    OmniVoice may behave poorly with embedded line breaks or irregular spacing,
+    so we collapse all whitespace into single spaces.
+    """
+    return " ".join((text or "").split()).strip()
 
 
 def _normalize_error_message(error: Exception | str) -> str:
@@ -75,7 +87,7 @@ def _compute_adaptive_speedup_factor(duration_us: int, slot_us: int) -> float:
     if duration_us <= slot_us:
         return 1.0
     # Add tiny headroom to avoid edge cases caused by rounding.
-    return (duration_us / slot_us) * 1.005
+    return (duration_us / slot_us) * _FIT_HEADROOM_RATIO
 
 
 def _fit_audio_to_slot(audio_path: Path, slot_us: int, base_speech_rate: float) -> tuple[int, float, bool]:
@@ -91,18 +103,27 @@ def _fit_audio_to_slot(audio_path: Path, slot_us: int, base_speech_rate: float) 
     if duration_us <= slot_us:
         return duration_us, base_speech_rate, False
 
-    factor = _compute_adaptive_speedup_factor(duration_us, slot_us)
-    apply_speed_to_existing_audio(audio_path, factor)
+    remaining_factor_budget = _MAX_ATEMPO_FACTOR_PER_LINE
+    total_factor = 1.0
+    adjusted = False
+    duration_after = duration_us
 
-    duration_after = get_audio_duration_us(audio_path)
-    # Retry once if still slightly over due waveform/frame rounding.
-    if duration_after > slot_us:
-        retry_factor = _compute_adaptive_speedup_factor(duration_after, slot_us)
-        apply_speed_to_existing_audio(audio_path, retry_factor)
+    for _ in range(2):
+        if duration_after <= slot_us or remaining_factor_budget <= 1.0 + 1e-6:
+            break
+
+        required_factor = _compute_adaptive_speedup_factor(duration_after, slot_us)
+        step_factor = min(required_factor, remaining_factor_budget)
+        if step_factor <= 1.0 + 1e-6:
+            break
+
+        apply_speed_to_existing_audio(audio_path, step_factor)
+        adjusted = True
+        total_factor *= step_factor
+        remaining_factor_budget /= step_factor
         duration_after = get_audio_duration_us(audio_path)
-        factor *= retry_factor
 
-    return duration_after, base_speech_rate * factor, True
+    return duration_after, base_speech_rate * total_factor, adjusted
 
 
 async def run_dubbing_pipeline(
@@ -178,12 +199,18 @@ async def run_dubbing_pipeline(
             if task.is_cancelled():
                 return
 
-            text = sub.text.strip()
+            original_text = sub.text.strip()
+            text = _normalize_tts_text(original_text)
             if not text:
                 continue
 
             progress = 15 + int((i / total) * 70)
             await task.update(progress, f"Đang tạo audio {i}/{total}: {text[:30]}...")
+            print(
+                f"[Dubbing] line={i} slot_us={_slot_duration_us(sub)} "
+                f"text_len={len(text)} original_len={len(original_text)} "
+                f"text={text!r}"
+            )
 
             audio_filename = f"line_{i:03d}.wav"
             audio_path = tts_output_dir / audio_filename
@@ -211,10 +238,17 @@ async def run_dubbing_pipeline(
                 continue
 
             slot_us = _slot_duration_us(sub)
+            generated_duration_us = get_audio_duration_us(audio_path)
             duration_us, effective_rate, adjusted = _fit_audio_to_slot(
                 audio_path=audio_path,
                 slot_us=slot_us,
                 base_speech_rate=speech_rate,
+            )
+            print(
+                f"[Dubbing] line={i} generated_us={generated_duration_us} "
+                f"slot_us={slot_us} final_us={duration_us} "
+                f"base_rate={speech_rate:.2f} effective_rate={effective_rate:.2f} "
+                f"adjusted={adjusted}"
             )
 
             if adjusted:
@@ -226,6 +260,15 @@ async def run_dubbing_pipeline(
                         f"{speech_rate:0.2f}x -> {effective_rate:0.2f}x"
                     ),
                 )
+
+            if duration_us > slot_us:
+                over_ms = (duration_us - slot_us) / 1000.0
+                warn_message = (
+                    f"Dòng {i}: audio vẫn dài hơn slot {over_ms:.0f}ms "
+                    f"sau khi fit ở {effective_rate:0.2f}x"
+                )
+                print(f"[Dubbing][Warn] {warn_message}")
+                await task.update(progress, warn_message)
 
             start_us = _srt_time_to_us(sub.start)
 
