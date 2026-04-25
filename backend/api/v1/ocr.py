@@ -1,10 +1,11 @@
 # backend/api/v1/ocr.py
 import asyncio
 import os
+import traceback
 from fastapi import APIRouter
 from pydantic import BaseModel
 from pathlib import Path
-from core.task_manager import task_manager, TaskStatus
+from core.task_manager import task_manager, TaskStatus, Task
 from services.ocr_service import run_ocr_pipeline
 
 router = APIRouter()
@@ -15,6 +16,40 @@ class OcrRequest(BaseModel):
     crop_region: list[int]   # [X, Y, W, H]
     fps: float = 4.0         # Tăng lên 4 FPS để bắt phụ đề ngắn < 0.5s
     output_dir: str = ""     # Nếu rỗng → lưu cạnh video
+
+
+def _to_user_error_message(exc: Exception) -> str:
+    msg = str(exc)
+    lowered = msg.lower()
+    if (
+        "cudnn64_8.dll" in lowered
+        or ("dynamic library" in lowered and "error code is 126" in lowered)
+    ):
+        return (
+            "OCR GPU thất bại vì không nạp được CUDA/cuDNN DLL (cudnn64_8.dll). "
+            "Cấu hình hiện tại là GPU-only nên task sẽ fail ngay. Hãy kiểm tra PATH và package nvidia trong .venv."
+        )
+    return f"OCR thất bại: {msg}"
+
+
+async def _run_ocr_pipeline_safe(
+    video_path: str,
+    crop_region: list[int],
+    fps: float,
+    output_srt: str,
+    task: Task,
+):
+    try:
+        await run_ocr_pipeline(
+            video_path=video_path,
+            crop_region=crop_region,
+            fps=fps,
+            output_srt=output_srt,
+            task=task,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        await task.fail(_to_user_error_message(exc))
 
 
 @router.post("/ocr")
@@ -32,7 +67,7 @@ async def start_ocr(req: OcrRequest):
 
     # Chạy pipeline trong background
     asyncio.create_task(
-        run_ocr_pipeline(
+        _run_ocr_pipeline_safe(
             video_path=req.video_path,
             crop_region=req.crop_region,
             fps=req.fps,

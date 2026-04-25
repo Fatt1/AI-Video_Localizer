@@ -20,6 +20,29 @@ def _text_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Tính khoảng cách Levenshtein giữa 2 chuỗi."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+
+    prev = list(range(len(b) + 1))
+    for i, ch_a in enumerate(a, 1):
+        curr = [i]
+        for j, ch_b in enumerate(b, 1):
+            cost = 0 if ch_a == ch_b else 1
+            curr.append(min(
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + cost,
+            ))
+        prev = curr
+    return prev[-1]
+
+
 def _normalize_text(text: str) -> str:
     """Chuẩn hóa text trước khi so sánh để giảm nhiễu do ký tự fullwidth/spacing."""
     if not text:
@@ -99,6 +122,119 @@ def _texts_are_near_variants(a: str | None, b: str | None, threshold: float = 0.
 
     return True
 
+
+def _texts_are_vote_equivalent(a: str | None, b: str | None, max_distance: int = 1) -> bool:
+    """
+    So sánh 2 text cho mục đích gom phiếu majority-vote.
+    Ưu tiên case OCR lệch 1 ký tự nhưng thực chất là cùng một subtitle.
+    """
+    if a is None or b is None:
+        return False
+
+    a_core = _text_core(a)
+    b_core = _text_core(b)
+    if not a_core or not b_core:
+        return False
+
+    if a_core == b_core:
+        return True
+
+    len_diff = abs(len(a_core) - len(b_core))
+    if len_diff > max_distance:
+        return False
+
+    if _levenshtein_distance(a_core, b_core) > max_distance:
+        return False
+
+    # Không coi typing effect mở rộng ở đầu/cuối là "same".
+    # Ví dụ: abc -> abcd phải đi theo nhánh typing, không phải exact.
+    if len_diff == 1:
+        shorter, longer = (a_core, b_core) if len(a_core) <= len(b_core) else (b_core, a_core)
+        if longer.startswith(shorter) or longer.endswith(shorter):
+            return False
+
+    return True
+
+
+def _pick_best_observation_text(observations: list[dict]) -> str:
+    """
+    Chọn text cuối cùng cho một block subtitle.
+
+    - Nếu cùng một subtitle lặp > 2 lần với vài biến thể nhỏ, chọn biến thể có nhiều phiếu nhất.
+    - Nếu hòa 1-1, chọn text của frame có confidence cao hơn.
+    """
+    if not observations:
+        return ""
+
+    clusters: list[dict] = []
+
+    for obs in observations:
+        text = (obs.get("text") or "").strip()
+        if not text:
+            continue
+
+        confidence = float(obs.get("confidence", 0.0) or 0.0)
+        placed = False
+
+        for cluster in clusters:
+            if _texts_are_vote_equivalent(cluster["anchor_text"], text):
+                cluster["items"].append(obs)
+                cluster["count"] += 1
+                cluster["total_confidence"] += confidence
+                stats = cluster["text_stats"].setdefault(text, {
+                    "count": 0,
+                    "total_confidence": 0.0,
+                    "best_confidence": 0.0,
+                })
+                stats["count"] += 1
+                stats["total_confidence"] += confidence
+                stats["best_confidence"] = max(stats["best_confidence"], confidence)
+
+                if confidence > cluster["best_confidence"]:
+                    cluster["best_confidence"] = confidence
+                placed = True
+                break
+
+        if not placed:
+            clusters.append({
+                "anchor_text": text,
+                "items": [obs],
+                "count": 1,
+                "total_confidence": confidence,
+                "best_confidence": confidence,
+                "text_stats": {
+                    text: {
+                        "count": 1,
+                        "total_confidence": confidence,
+                        "best_confidence": confidence,
+                    }
+                },
+            })
+
+    if not clusters:
+        return ""
+
+    best_cluster = max(
+        clusters,
+        key=lambda c: (
+            c["count"],
+            c["total_confidence"],
+            c["best_confidence"],
+        ),
+    )
+
+    best_text, _ = max(
+        best_cluster["text_stats"].items(),
+        key=lambda item: (
+            item[1]["count"],
+            item[1]["total_confidence"],
+            item[1]["best_confidence"],
+            len(_text_core(item[0])),
+            len(item[0]),
+        ),
+    )
+    return best_text
+
 from core.task_manager import Task, TaskStatus
 from core.config import FFMPEG_PATH   # dùng path đã detect sẵn
 
@@ -106,6 +242,7 @@ from core.config import FFMPEG_PATH   # dùng path đã detect sẵn
 # Dùng PaddleOCR 2.7.x — API ổn định, không dùng PaddleX pipeline
 _ocr_engine = None
 _paddle_cuda_paths_initialized = False
+_paddle_cuda_dll_handles = []
 
 
 def _iter_nvidia_bin_dirs() -> list[Path]:
@@ -130,7 +267,7 @@ def _ensure_paddle_cuda_dll_paths() -> None:
     Important: Do not mutate os.environ['PATH'] globally here because that can
     shadow PyTorch's own CUDA DLLs and break OmniVoice with WinError 127.
     """
-    global _paddle_cuda_paths_initialized
+    global _paddle_cuda_paths_initialized, _paddle_cuda_dll_handles
     if _paddle_cuda_paths_initialized:
         return
 
@@ -138,12 +275,23 @@ def _ensure_paddle_cuda_dll_paths() -> None:
         _paddle_cuda_paths_initialized = True
         return
 
-    for dll_bin_path in _iter_nvidia_bin_dirs():
+    dll_dirs = _iter_nvidia_bin_dirs()
+    for dll_bin_path in dll_dirs:
         try:
-            os.add_dll_directory(str(dll_bin_path))
+            # Keep handles alive for process lifetime so DLL search paths stay valid.
+            handle = os.add_dll_directory(str(dll_bin_path))
+            _paddle_cuda_dll_handles.append(handle)
         except Exception:
             # Ignore non-critical registration errors and let Paddle raise later if needed.
             continue
+
+    # Follow Paddle guidance on Windows: ensure CUDA/cuDNN bin folders are in PATH.
+    # Inject lazily here (not at import-time) to reduce side effects to OCR startup only.
+    existing_path = os.environ.get("PATH", "")
+    existing_path_items = {p.strip().lower() for p in existing_path.split(os.pathsep) if p.strip()}
+    prepend_items = [str(p) for p in dll_dirs if str(p).strip().lower() not in existing_path_items]
+    if prepend_items:
+        os.environ["PATH"] = os.pathsep.join(prepend_items + ([existing_path] if existing_path else []))
 
     _paddle_cuda_paths_initialized = True
 
@@ -164,7 +312,7 @@ def get_ocr_engine():
         from paddleocr import PaddleOCR
 
         # use_angle_cls=True: xoay ảnh để detect text nghiêng
-        # use_gpu=True: Dùng card đồ họa NVIDIA (đã cài paddlepaddle-gpu)
+        # GPU-only theo yêu cầu: nếu GPU/CUDA lỗi thì fail luôn.
         _ocr_engine = PaddleOCR(
             use_angle_cls=True,
             use_gpu=True,
@@ -232,23 +380,26 @@ def _should_reuse_ocr_result(
     return (current_time - last_ocr_time) <= max_reuse_window
 
 
-def ocr_image(image: np.ndarray) -> str:
+def ocr_image(image: np.ndarray) -> tuple[str, float]:
     """
     Nhận diện text từ ảnh dùng PaddleOCR 2.7.x.
     Output format: [[[box_coords], (text, confidence)], ...]
     """
     engine = get_ocr_engine()
-    # cls=True: dùng angle classifier (cần use_angle_cls=True khi init)
     result = engine.ocr(image, cls=True)
     if not result or not result[0]:
-        return ""
-    # Lọc theo confidence > 60%
-    texts = [
-        line[1][0]
+        return "", 0.0
+    lines = [
+        (line[1][0], float(line[1][1]))
         for line in result[0]
         if line and line[1][1] > 0.6
     ]
-    return " ".join(texts).strip()
+    if not lines:
+        return "", 0.0
+
+    text = " ".join(line_text for line_text, _ in lines).strip()
+    confidence = sum(line_conf for _, line_conf in lines) / len(lines)
+    return text, confidence
 
 
 def frames_to_srt(entries: list[dict], output_path: str):
@@ -305,6 +456,11 @@ def post_process_ocr_entries(
         if a_core and b_core and a_core == b_core:
             return "exact"
 
+        # OCR lệch đúng 1 ký tự (ví dụ 风/凤) vẫn coi là cùng một subtitle
+        # để phía sau có thể majority-vote hoặc tie-break theo confidence.
+        if _texts_are_vote_equivalent(a_n, b_n):
+            return "exact"
+
         # OCR đôi khi lệch nhẹ 1-2 ký tự do nhòe/viền subtitle.
         if _texts_are_same(a_n, b_n):
             return "exact"
@@ -318,13 +474,50 @@ def post_process_ocr_entries(
             return "typing"
 
         return "different"
+
+    def compare_text_to_observations(observations: list[dict], text: str) -> str:
+        """
+        So sánh frame mới với toàn bộ các biến thể đã thấy trong block hiện tại.
+
+        Mục tiêu: nếu một frame ở giữa bị OCR sai do vật thể/chi tiết giao diện che nét chữ,
+        block vẫn tiếp tục được nối nếu frame mới còn khớp với một biến thể ổn định trước đó.
+        """
+        if not observations or not text:
+            return "different"
+
+        found_typing = False
+        for obs in observations:
+            relation = compare_text_relation(obs.get("text", ""), text)
+            if relation == "exact":
+                return "exact"
+            if relation == "typing":
+                found_typing = True
+
+        return "typing" if found_typing else "different"
     # 1. Gộp (Merging)
+    def build_observation(entry: dict) -> dict:
+        return {
+            "text": entry.get("text", ""),
+            "confidence": float(entry.get("confidence", 0.0) or 0.0),
+        }
+
+    def finalize_entry(entry: dict) -> dict:
+        finalized = entry.copy()
+        observations = finalized.pop("_observations", [])
+        finalized.pop("_contains_typing", None)
+        chosen_text = _pick_best_observation_text(observations)
+        if chosen_text:
+            finalized["text"] = chosen_text
+        return finalized
+
     merged = []
     curr = entries[0].copy()
+    curr["_observations"] = [build_observation(curr)]
+    curr["_contains_typing"] = False
     for nxt in entries[1:]:
 
         gap = nxt["start"] - curr["end"]
-        relation = compare_text_relation(curr["text"], nxt["text"])
+        relation = compare_text_to_observations(curr["_observations"], nxt["text"])
 
         # exact: cho merge bình thường
         # typing: chỉ merge trong khoảng ngắn để tránh nuốt mất subtitle ở giữa
@@ -336,6 +529,8 @@ def post_process_ocr_entries(
 
         if gap <= max_gap and (can_merge_exact or can_merge_typing):
             curr["end"] = nxt["end"]
+            curr["_observations"].append(build_observation(nxt))
+            curr["_contains_typing"] = curr["_contains_typing"] or (relation == "typing")
 
             # Với typing effect, giữ text dài hơn để lấy câu hoàn chỉnh cuối cùng.
             if relation == "typing" and len(nxt["text"]) >= len(curr["text"]):
@@ -343,10 +538,12 @@ def post_process_ocr_entries(
 
         else:
 
-            merged.append(curr)
+            merged.append(finalize_entry(curr))
 
             curr = nxt.copy()
-    merged.append(curr)
+            curr["_observations"] = [build_observation(curr)]
+            curr["_contains_typing"] = False
+    merged.append(finalize_entry(curr))
     # 2. Lọc nhiễu (Filtering)
     final_entries = []
 
@@ -434,15 +631,18 @@ async def run_ocr_pipeline(
                 last_ocr_time=last_ocr_time,
             ):
                 text = prev_text
+                confidence = 1.0
             else:
-                text = ocr_image(cropped) or None
+                text, confidence = ocr_image(cropped)
+                text = text or None
                 last_ocr_time = frame_time
 
             if text:
                 raw_entries.append({
                     "start": frame_time,
                     "end": frame_time + (1.0 / fps),
-                    "text": text
+                    "text": text,
+                    "confidence": confidence,
                 })
 
             prev_text = text

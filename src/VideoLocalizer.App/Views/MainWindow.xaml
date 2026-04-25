@@ -317,6 +317,10 @@
                                Command="{Binding SaveSrtCommand}"
                                Icon="{ui:SymbolIcon Save24}"
                                Margin="0,0,4,0"/>
+                    <ui:Button Content="Lọc lặp SRT"
+                               Command="{Binding FilterDuplicateSubtitlesCommand}"
+                               Margin="0,0,4,0"
+                               ToolTip="Gộp các dòng lặp liên tiếp: giữ Start dòng đầu và End dòng cuối"/>
                     <Separator/>
 
                     <!-- Nút chạy OCR: bind vào RunOcrCommand (có CanExecute = !IsBusy) -->

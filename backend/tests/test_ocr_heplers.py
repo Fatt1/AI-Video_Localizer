@@ -157,3 +157,69 @@ def test_post_process_absorbs_short_near_duplicate_tail_blip():
     assert processed[0]["text"] == "杀死动物献给神的巫术"
     assert processed[0]["start"] == 301.75
     assert processed[0]["end"] == 303.25
+
+
+def test_post_process_majority_vote_picks_most_common_variant():
+    """Nếu cùng một subtitle lặp nhiều frame, chọn biến thể xuất hiện nhiều nhất."""
+    entries = [
+        {"start": 0.00, "end": 0.25, "text": "帝女凤那丫头", "confidence": 0.98},
+        {"start": 0.25, "end": 0.50, "text": "帝女凤那丫头", "confidence": 0.97},
+        {"start": 0.50, "end": 0.75, "text": "帝女风那丫头", "confidence": 0.75},
+        {"start": 0.75, "end": 1.00, "text": "帝女凤那丫头", "confidence": 0.96},
+    ]
+
+    processed = post_process_ocr_entries(entries, min_duration=0.0)
+
+    assert len(processed) == 1
+    assert processed[0]["text"] == "帝女凤那丫头"
+
+
+def test_post_process_tie_break_uses_higher_confidence():
+    """Nếu hòa 1-1 giữa 2 biến thể gần giống, chọn frame có confidence cao hơn."""
+    entries = [
+        {"start": 0.00, "end": 0.25, "text": "帝女风那丫头", "confidence": 0.75},
+        {"start": 0.25, "end": 0.50, "text": "帝女凤那丫头", "confidence": 0.96},
+    ]
+
+    processed = post_process_ocr_entries(entries, min_duration=0.0)
+
+    assert len(processed) == 1
+    assert processed[0]["text"] == "帝女凤那丫头"
+
+
+def test_post_process_keeps_block_when_middle_frame_is_noisy_variant():
+    """Frame ở giữa bị OCR lệch do vật thể che chữ không được làm tách cả block."""
+    entries = [
+        {"start": 38.25, "end": 38.50, "text": "今日是黑水铜调主的寿诞", "confidence": 0.897},
+        {"start": 38.50, "end": 38.75, "text": "今日是黑水调调主的寿诞", "confidence": 0.889},
+        {"start": 38.75, "end": 39.00, "text": "今日是黑水调调主的寿诞", "confidence": 0.884},
+        {"start": 39.00, "end": 39.25, "text": "今日是黑水铜调主的寿诞", "confidence": 0.909},
+        {"start": 39.25, "end": 39.50, "text": "今日是黑水铜铜主的寿诞", "confidence": 0.899},
+        {"start": 39.50, "end": 39.75, "text": "今日是黑水调主的寿诞", "confidence": 0.931},
+        {"start": 39.75, "end": 40.00, "text": "今日是黑水调调主的寿诞", "confidence": 0.903},
+        {"start": 40.00, "end": 40.25, "text": "今日是黑水调调主的寿诞", "confidence": 0.872},
+        {"start": 40.25, "end": 40.50, "text": "今日是黑水调明主的寿诞", "confidence": 0.883},
+        {"start": 40.50, "end": 40.75, "text": "今日是黑水调调主的寿诞", "confidence": 0.880},
+    ]
+
+    processed = post_process_ocr_entries(entries, min_duration=0.0)
+
+    assert len(processed) == 1
+    assert processed[0]["start"] == 38.25
+    assert processed[0]["end"] == 40.75
+    assert processed[0]["text"] == "今日是黑水调调主的寿诞"
+
+
+def test_post_process_merges_when_one_frame_drops_one_character():
+    """OCR thiếu/thừa đúng 1 ký tự vẫn phải được coi là cùng subtitle."""
+    entries = [
+        {"start": 0.00, "end": 0.25, "text": "今日是黑水调调主的寿诞", "confidence": 0.88},
+        {"start": 0.25, "end": 0.50, "text": "今日是黑水调主的寿诞", "confidence": 0.93},
+        {"start": 0.50, "end": 0.75, "text": "今日是黑水调调主的寿诞", "confidence": 0.90},
+    ]
+
+    processed = post_process_ocr_entries(entries, min_duration=0.0)
+
+    assert len(processed) == 1
+    assert processed[0]["start"] == 0.00
+    assert processed[0]["end"] == 0.75

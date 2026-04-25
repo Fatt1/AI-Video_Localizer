@@ -3,7 +3,9 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.Text;
 using System.Threading;
+using System.Windows;
 using VideoLocalizer.Models;
 using VideoLocalizer.Services;
 
@@ -227,6 +229,115 @@ public partial class MainViewModel : ObservableObject
         {
             StatusMessage = $"Lỗi lưu SRT: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Lọc các cụm subtitle bị lặp liên tiếp:
+    /// - So sánh text theo tiêu chí giống 100% sau khi Trim 2 đầu.
+    /// - Giữ 1 dòng duy nhất với StartTime của dòng đầu và EndTime của dòng cuối cụm.
+    /// - Không tự lưu file; user phải bấm Lưu SRT thủ công.
+    /// </summary>
+    [RelayCommand]
+    private void FilterDuplicateSubtitles()
+    {
+        if (Subtitles.Count < 2)
+        {
+            StatusMessage = "Không đủ dữ liệu để lọc dòng lặp.";
+            return;
+        }
+
+        var source = Subtitles.ToList();
+        var filtered = new List<SubtitleEntry>(source.Count);
+        var detailLines = new List<string>();
+        int removedLines = 0;
+
+        int i = 0;
+        while (i < source.Count)
+        {
+            var first = source[i];
+            int end = i;
+
+            while (end + 1 < source.Count && AreConsecutiveDuplicates(first, source[end + 1]))
+                end++;
+
+            if (end > i)
+            {
+                var merged = new SubtitleEntry
+                {
+                    StartTime = first.StartTime,
+                    EndTime = source[end].EndTime,
+                    Text = first.Text
+                };
+                filtered.Add(merged);
+
+                removedLines += end - i;
+
+                int firstLineNo = source[i].Index > 0 ? source[i].Index : i + 1;
+                int lastLineNo = source[end].Index > 0 ? source[end].Index : end + 1;
+
+                var deletedLineNos = Enumerable.Range(i + 1, end - i)
+                    .Select(pos => source[pos].Index > 0 ? source[pos].Index : pos + 1)
+                    .ToList();
+
+                var sampleText = (first.Text ?? string.Empty).Trim();
+                if (string.IsNullOrEmpty(sampleText))
+                    sampleText = "(trống)";
+                if (sampleText.Length > 80)
+                    sampleText = sampleText[..77] + "...";
+
+                detailLines.Add(
+                    $"- Dòng {firstLineNo}-{lastLineNo}: giữ dòng {firstLineNo}, xóa [{string.Join(", ", deletedLineNos)}], nội dung: \"{sampleText}\"");
+            }
+            else
+            {
+                filtered.Add(first);
+            }
+
+            i = end + 1;
+        }
+
+        if (removedLines == 0)
+        {
+            StatusMessage = "Không có cụm dòng lặp liên tiếp để lọc.";
+            MessageBox.Show(
+                "Không phát hiện dòng lặp liên tiếp theo tiêu chí: text giống 100% sau khi bỏ khoảng trắng 2 đầu.",
+                "Lọc lặp SRT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        Subtitles.Clear();
+        foreach (var entry in filtered)
+            Subtitles.Add(entry);
+
+        ReIndexSubtitles();
+        SelectedSubtitle = Subtitles.FirstOrDefault();
+
+        StatusMessage = $"Đã lọc {detailLines.Count} cụm lặp, xóa {removedLines} dòng. Nhớ bấm 'Lưu SRT' để ghi file.";
+
+        var report = new StringBuilder();
+        report.AppendLine("Đã lọc dòng lặp SRT thành công.");
+        report.AppendLine($"- Số cụm đã gộp: {detailLines.Count}");
+        report.AppendLine($"- Số dòng đã xóa: {removedLines}");
+        report.AppendLine("- Lưu ý: Chưa tự lưu file, hãy bấm 'Lưu SRT' khi muốn ghi ra đĩa.");
+        report.AppendLine();
+        report.AppendLine("Chi tiết từng cụm:");
+        foreach (var line in detailLines)
+            report.AppendLine(line);
+
+        MessageBox.Show(
+            report.ToString(),
+            "Kết quả lọc lặp SRT",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    private static bool AreConsecutiveDuplicates(SubtitleEntry left, SubtitleEntry right)
+    {
+        var leftText = (left.Text ?? string.Empty).Trim();
+        var rightText = (right.Text ?? string.Empty).Trim();
+        return string.Equals(leftText, rightText, StringComparison.Ordinal);
     }
 
     // =====================================================================
