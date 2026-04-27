@@ -256,12 +256,12 @@
                           Width="4" HorizontalAlignment="Stretch"
                           Background="#333"/>
 
-            <!-- ─── PANEL PHẢI: Style + Glossary + DataGrid ─── -->
+            <!-- ─── PANEL PHẢI: Canh bao loi SRT + DataGrid ─── -->
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
-                    <!-- Style radio buttons -->
+                    <!-- Danh sach dong nghi loi -->
                     <RowDefinition Height="Auto"/>
-                    <!-- Glossary textbox -->
+                    <!-- Row phu de groupbox canh bao row-span -->
                     <RowDefinition Height="Auto"/>
                     <!-- Toolbar (Load SRT, Save, Export) -->
                     <RowDefinition Height="Auto"/>
@@ -271,41 +271,61 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <!-- ── Style Selector (Radio Buttons) ── -->
-                <GroupBox Grid.Row="0" Header="Phong cách dịch" Margin="6,6,6,0" Padding="8,4">
-                    <StackPanel Orientation="Horizontal" Margin="0,2">
-                        <!-- Mỗi RadioButton bind IsChecked vào SelectedStyle qua converter -->
-                        <!-- Dùng GroupName để chúng exclusive -->
-                        <RadioButton Content="Đời sống / Livestream"
-                                     GroupName="TranslateStyle"
-                                     IsChecked="{Binding SelectedStyle,
-                                         Converter={StaticResource RadioStyleConverter},
-                                         ConverterParameter=lifestyle}"
-                                     Margin="0,0,12,0"/>
-                        <RadioButton Content="Review phim"
-                                     GroupName="TranslateStyle"
-                                     IsChecked="{Binding SelectedStyle,
-                                         Converter={StaticResource RadioStyleConverter},
-                                         ConverterParameter=review}"
-                                     Margin="0,0,12,0"/>
-                        <RadioButton Content="Phim cổ trang"
-                                     GroupName="TranslateStyle"
-                                     IsChecked="{Binding SelectedStyle,
-                                         Converter={StaticResource RadioStyleConverter},
-                                         ConverterParameter=ancient_drama}"/>
-                    </StackPanel>
-                </GroupBox>
+                <!-- ── Danh sach cac dong SRT co kha nang loi thoi luong (< 1s) ── -->
+                <GroupBox Grid.Row="0"
+                          Grid.RowSpan="2"
+                          Header="Dong SRT co kha nang loi (&lt; 1 giay)"
+                          Margin="6,6,6,0"
+                          Padding="6,4">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="190"/>
+                        </Grid.RowDefinitions>
 
-                <!-- ── Từ Điển Bắt Buộc (Glossary TextBox) ── -->
-                <GroupBox Grid.Row="1" Header="Từ điển bắt buộc (mỗi dòng: Gốc = Dịch)"
-                          Margin="6,4,6,0" Padding="6,4">
-                    <TextBox Name="GlossaryTextBox"
-                             Text="{Binding GlossaryText, UpdateSourceTrigger=PropertyChanged}"
-                             AcceptsReturn="True" 
-                             MinLines="3" MaxLines="5"
-                             VerticalScrollBarVisibility="Auto"
-                             FontFamily="Consolas" FontSize="12"
-                             ToolTip="Mỗi dòng 1 cặp, ví dụ: 大师姐 = Đại sư tỷ"/>
+                        <TextBlock Grid.Row="0"
+                                   Text="{Binding ShortDurationWarningMessage}"
+                                   Foreground="#FFB366"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,6"/>
+
+                        <DataGrid Grid.Row="1"
+                                  ItemsSource="{Binding SuspectedShortDurationSubtitles}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  IsReadOnly="True"
+                                  SelectionMode="Single"
+                                  GridLinesVisibility="Horizontal"
+                                  Margin="0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="#"
+                                                   Binding="{Binding Index}"
+                                                   Width="40"/>
+
+                                <DataGridTextColumn Header="Bat dau"
+                                                   Binding="{Binding StartTime,
+                                                       Converter={StaticResource TimeSpanConverter}}"
+                                                   Width="90"/>
+
+                                <DataGridTextColumn Header="Ket thuc"
+                                                   Binding="{Binding EndTime,
+                                                       Converter={StaticResource TimeSpanConverter}}"
+                                                   Width="90"/>
+
+                                <DataGridTextColumn Header="Noi dung"
+                                                   Binding="{Binding Text}"
+                                                   Width="*">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
+                                            <Setter Property="MaxHeight" Value="60"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
                 </GroupBox>
 
                 <!-- ── Subtitle Toolbar ── -->

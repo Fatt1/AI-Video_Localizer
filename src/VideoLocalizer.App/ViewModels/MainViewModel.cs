@@ -2,6 +2,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
+using System.Collections.Specialized;
 using System.Collections.ObjectModel;
 using System.Text;
 using System.Threading;
@@ -17,6 +18,8 @@ namespace VideoLocalizer.ViewModels;
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
+    private static readonly TimeSpan MinExpectedSubtitleDuration = TimeSpan.FromSeconds(1);
+
     // =====================================================================
     // SERVICES
     // =====================================================================
@@ -75,6 +78,16 @@ public partial class MainViewModel : ObservableObject
     /// ObservableCollection tự notify UI khi thêm/xóa item
     /// </summary>
     public ObservableCollection<SubtitleEntry> Subtitles { get; } = new();
+
+    /// <summary>
+    /// Danh sách các dòng có khả năng lỗi: thời lượng (End - Start) < 1 giây.
+    /// Dùng để hiển thị cảnh báo phía trên bảng subtitle chính.
+    /// </summary>
+    public ObservableCollection<SubtitleEntry> SuspectedShortDurationSubtitles { get; } = new();
+
+    /// <summary>Thông báo cảnh báo tổng hợp cho danh sách dòng nghi lỗi.</summary>
+    [ObservableProperty]
+    private string _shortDurationWarningMessage = "Không phát hiện dòng SRT nghi lỗi thời lượng.";
 
     /// <summary>Dòng sub đang được chọn/highlighted trên DataGrid</summary>
     [ObservableProperty]
@@ -140,6 +153,12 @@ public partial class MainViewModel : ObservableObject
     /// <summary>true khi đã kết nối được Python backend</summary>
     [ObservableProperty]
     private bool _isBackendConnected = false;
+
+    public MainViewModel()
+    {
+        Subtitles.CollectionChanged += OnSubtitlesCollectionChanged;
+        RefreshSuspectedShortDurationSubtitles();
+    }
 
     // =====================================================================
     // COMMANDS — [RelayCommand] tự tạo ICommand property
@@ -338,6 +357,45 @@ public partial class MainViewModel : ObservableObject
         var leftText = (left.Text ?? string.Empty).Trim();
         var rightText = (right.Text ?? string.Empty).Trim();
         return string.Equals(leftText, rightText, StringComparison.Ordinal);
+    }
+
+    private void OnSubtitlesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.OldItems != null)
+        {
+            foreach (SubtitleEntry item in e.OldItems)
+                item.PropertyChanged -= OnSubtitleEntryPropertyChanged;
+        }
+
+        if (e.NewItems != null)
+        {
+            foreach (SubtitleEntry item in e.NewItems)
+                item.PropertyChanged += OnSubtitleEntryPropertyChanged;
+        }
+
+        RefreshSuspectedShortDurationSubtitles();
+    }
+
+    private void OnSubtitleEntryPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(SubtitleEntry.StartTime) or nameof(SubtitleEntry.EndTime))
+            RefreshSuspectedShortDurationSubtitles();
+    }
+
+    private void RefreshSuspectedShortDurationSubtitles()
+    {
+        var suspects = Subtitles
+            .Where(s => (s.EndTime - s.StartTime) < MinExpectedSubtitleDuration)
+            .OrderBy(s => s.Index)
+            .ToList();
+
+        SuspectedShortDurationSubtitles.Clear();
+        foreach (var item in suspects)
+            SuspectedShortDurationSubtitles.Add(item);
+
+        ShortDurationWarningMessage = suspects.Count > 0
+            ? $"Canh bao: {suspects.Count} dong co thoi luong duoi 1 giay (co kha nang bi loi)."
+            : "Khong phat hien dong SRT nghi loi thoi luong (< 1 giay).";
     }
 
     // =====================================================================
