@@ -252,16 +252,52 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         MessageBox.Show("Translate feature coming in Step 6!", "Info");
     }
 
+    private void MenuFindReplace_Click(object sender, RoutedEventArgs e)
+    {
+        OpenFindReplaceDialog();
+    }
+
     private void MenuDubbing_Click(object sender, RoutedEventArgs e)
     {
         if (VM.RunDubbingCommand.CanExecute(null))
             VM.RunDubbingCommand.Execute(null);
     }
 
+    private void BtnFindReplace_Click(object sender, RoutedEventArgs e)
+    {
+        OpenFindReplaceDialog();
+    }
+
     private void MenuSettings_Click(object sender, RoutedEventArgs e)
     {
         // TODO Step 10: mở SettingsWindow
         MessageBox.Show("Settings coming in Step 10!", "Info");
+    }
+
+    private void OpenFindReplaceDialog()
+    {
+        if (VM.Subtitles.Count == 0)
+        {
+            MessageBox.Show(
+                "Danh sách SRT đang trống. Hãy load SRT trước khi tìm và thay thế.",
+                "Tìm & thay thế SRT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new FindReplaceSubtitleDialog(VM.Subtitles)
+        {
+            Owner = this
+        };
+
+        dialog.ShowDialog();
+
+        if (dialog.LastReplacedLineCount > 0)
+        {
+            VM.StatusMessage =
+                $"Đã thay thế {dialog.LastReplacedOccurrenceCount} lần trên {dialog.LastReplacedLineCount} dòng. Chưa tự lưu file SRT.";
+        }
     }
 
     // ═══════════════════════════════════════════════

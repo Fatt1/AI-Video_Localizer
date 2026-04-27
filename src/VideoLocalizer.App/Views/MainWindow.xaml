@@ -65,6 +65,7 @@
                                   ToolTip="Kéo chuột trên video để chọn vùng có hardsub"/>
                         <MenuItem Header="OCR Hardsub..." Name="MenuOcr" Click="MenuOcr_Click"/>
                         <MenuItem Header="Dịch SRT..." Name="MenuTranslate" Click="MenuTranslate_Click"/>
+                        <MenuItem Header="Tìm &amp; thay thế SRT..." Name="MenuFindReplace" Click="MenuFindReplace_Click"/>
                         <Separator/>
                         <MenuItem Header="STT (Phase 2)" IsEnabled="False"/>
                         <MenuItem Header="Dubbing (OmniVoice -> CapCut)..." Name="MenuDubbing" Click="MenuDubbing_Click"/>
@@ -321,6 +322,11 @@
                                Command="{Binding FilterDuplicateSubtitlesCommand}"
                                Margin="0,0,4,0"
                                ToolTip="Gộp các dòng lặp liên tiếp: giữ Start dòng đầu và End dòng cuối"/>
+                    <ui:Button Content="Tìm/Thay thế"
+                               Name="BtnFindReplace"
+                               Click="BtnFindReplace_Click"
+                               Margin="0,0,4,0"
+                               ToolTip="Tìm gần đúng trong SRT và thay thế toàn bộ trên danh sách hiện tại"/>
                     <Separator/>
 
                     <!-- Nút chạy OCR: bind vào RunOcrCommand (có CanExecute = !IsBusy) -->
