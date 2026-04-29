@@ -49,6 +49,7 @@
                         <MenuItem Header="Mở Video..." Command="{Binding OpenVideoCommand}"
                                   InputGestureText="Ctrl+O"/>
                         <MenuItem Header="Load SRT..." Command="{Binding LoadSrtCommand}"/>
+                        <MenuItem Header="Load SRT việt sub để so sánh..." Command="{Binding LoadCompareSrtCommand}"/>
                         <MenuItem Header="Lưu SRT" Command="{Binding SaveSrtCommand}"
                                   InputGestureText="Ctrl+S"/>
                         <Separator/>
@@ -330,24 +331,34 @@
 
                 <!-- ── Subtitle Toolbar ── -->
                 <ToolBar Grid.Row="2" Margin="6,4,6,0">
+                    <ToolBar.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" IsItemsHost="True"/>
+                        </ItemsPanelTemplate>
+                    </ToolBar.ItemsPanel>
                     <ui:Button Content="Load SRT"
                                Command="{Binding LoadSrtCommand}"
                                Icon="{ui:SymbolIcon DocumentAdd24}"
-                               Margin="0,0,4,0"/>
+                               Margin="0,0,4,4"/>
                     <ui:Button Content="Lưu SRT"
                                Command="{Binding SaveSrtCommand}"
                                Icon="{ui:SymbolIcon Save24}"
-                               Margin="0,0,4,0"/>
+                               Margin="0,0,4,4"/>
                     <ui:Button Content="Lọc lặp SRT"
                                Command="{Binding FilterDuplicateSubtitlesCommand}"
-                               Margin="0,0,4,0"
+                               Margin="0,0,4,4"
                                ToolTip="Gộp các dòng lặp liên tiếp: giữ Start dòng đầu và End dòng cuối"/>
+                    <ui:Button Content="So sánh SRT"
+                               Command="{Binding CompareSrtCommand}"
+                               Icon="{ui:SymbolIcon Search24}"
+                               Margin="0,0,4,4"
+                               ToolTip="So sánh thời gian SRT gốc và SRT dịch"/>
                     <ui:Button Content="Tìm/Thay thế"
                                Name="BtnFindReplace"
                                Click="BtnFindReplace_Click"
-                               Margin="0,0,4,0"
+                               Margin="0,0,4,4"
                                ToolTip="Tìm gần đúng trong SRT và thay thế toàn bộ trên danh sách hiện tại"/>
-                    <Separator/>
+                    <Separator Margin="0,0,4,4"/>
 
                     <!-- Nút chạy OCR: bind vào RunOcrCommand (có CanExecute = !IsBusy) -->
                     <ui:Button Name="BtnRunOcr"
@@ -355,7 +366,7 @@
                                Command="{Binding RunOcrCommand}"
                                Icon="{ui:SymbolIcon ScanObject24}"
                                ToolTip="Nhận diện chữ từ video (Hardsub OCR)"
-                               Margin="0,0,4,0"/>
+                               Margin="0,0,4,4"/>
 
                     <!-- Nút dịch: bind vào RunTranslateCommand -->
                     <ui:Button Name="BtnTranslate"
@@ -363,9 +374,9 @@
                                Command="{Binding RunTranslateCommand}"
                                Icon="{ui:SymbolIcon Translate24}"
                                ToolTip="Chỉ dịch SRT sang tiếng Việt (không tạo audio CapCut)"
-                               Margin="0,0,4,0"/>
+                               Margin="0,0,4,4"/>
 
-                    <Separator/>
+                    <Separator Margin="0,0,4,4"/>
 
                     <!-- Nút Hủy: chỉ active khi đang có task chạy (IsBusy = true) -->
                     <ui:Button Name="BtnCancel"
@@ -373,6 +384,7 @@
                                Command="{Binding CancelCurrentTaskCommand}"
                                Icon="{ui:SymbolIcon Dismiss24}"
                                Appearance="Danger"
+                               Margin="0,0,4,4"
                                ToolTip="Hủy task đang chạy"/>
                 </ToolBar>
 

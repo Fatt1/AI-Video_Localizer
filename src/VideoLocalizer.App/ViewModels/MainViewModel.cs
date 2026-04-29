@@ -97,6 +97,13 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string _currentSrtPath = string.Empty;
 
+    /// <summary>Đường dẫn file SRT so sánh</summary>
+    [ObservableProperty]
+    private string _compareSrtPath = string.Empty;
+
+    /// <summary>Danh sách subtitle so sánh</summary>
+    public ObservableCollection<SubtitleEntry> CompareSubtitles { get; } = new();
+
     // =====================================================================
     // TRANSLATION SETTINGS (Right panel)
     // =====================================================================
@@ -213,6 +220,33 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             StatusMessage = $"Lỗi load SRT: {ex.Message}";
+        }
+    }
+
+    /// <summary>Load file SRT so sánh</summary>
+    [RelayCommand]
+    private void LoadCompareSrt()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Chọn file SRT việt sub để so sánh",
+            Filter = "SRT Subtitle files|*.srt|All files|*.*",
+            CheckFileExists = true
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        try
+        {
+            CompareSrtPath = dialog.FileName;
+            var entries = SubtitleService.Parse(dialog.FileName);
+            CompareSubtitles.Clear();
+            foreach (var entry in entries) CompareSubtitles.Add(entry);
+            StatusMessage = $"Đã load file so sánh: {System.IO.Path.GetFileName(dialog.FileName)} ({entries.Count} dòng)";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Lỗi load SRT so sánh: {ex.Message}";
         }
     }
 
@@ -350,6 +384,87 @@ public partial class MainViewModel : ObservableObject
             "Kết quả lọc lặp SRT",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
+    }
+
+    /// <summary>So sánh SRT gốc với SRT so sánh</summary>
+    [RelayCommand]
+    private void CompareSrt()
+    {
+        if (Subtitles.Count == 0)
+        {
+            MessageBox.Show("Vui lòng load SRT gốc trước.", "So sánh SRT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (CompareSubtitles.Count == 0)
+        {
+            MessageBox.Show("Vui lòng load SRT việt sub để so sánh trước.", "So sánh SRT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var report = new StringBuilder();
+        int errorCount = 0;
+
+        int maxLines = Math.Max(Subtitles.Count, CompareSubtitles.Count);
+        
+        for (int i = 0; i < maxLines; i++)
+        {
+            var orig = i < Subtitles.Count ? Subtitles[i] : null;
+            var comp = i < CompareSubtitles.Count ? CompareSubtitles[i] : null;
+
+            if (orig != null && comp != null)
+            {
+                if (orig.StartTime != comp.StartTime || orig.EndTime != comp.EndTime)
+                {
+                    errorCount++;
+                    report.AppendLine($"Dòng {i + 1}: Lệch thời gian.");
+                    report.AppendLine($"  - Gốc : {orig.StartTime:hh\\:mm\\:ss\\,fff} --> {orig.EndTime:hh\\:mm\\:ss\\,fff}");
+                    report.AppendLine($"  - Dịch: {comp.StartTime:hh\\:mm\\:ss\\,fff} --> {comp.EndTime:hh\\:mm\\:ss\\,fff}");
+                    report.AppendLine();
+                }
+            }
+            else if (orig == null)
+            {
+                errorCount++;
+                report.AppendLine($"Dòng {i + 1}: Dư ở file dịch (Không có trong gốc).");
+                report.AppendLine();
+            }
+            else if (comp == null)
+            {
+                errorCount++;
+                report.AppendLine($"Dòng {i + 1}: Thiếu ở file dịch (Có trong gốc).");
+                report.AppendLine();
+            }
+        }
+
+        if (errorCount == 0)
+        {
+            MessageBox.Show("Hai file SRT khớp nhau hoàn toàn về thời gian!", "Kết quả so sánh", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        else
+        {
+            var scrollViewer = new System.Windows.Controls.ScrollViewer
+            {
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                Margin = new Thickness(10)
+            };
+            var textBlock = new System.Windows.Controls.TextBlock
+            {
+                Text = $"Phát hiện {errorCount} lỗi lệch thời gian hoặc số lượng dòng.\n\nChi tiết:\n" + report.ToString(),
+                TextWrapping = System.Windows.TextWrapping.Wrap,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas")
+            };
+            scrollViewer.Content = textBlock;
+
+            var window = new Window
+            {
+                Title = "Kết quả so sánh SRT",
+                Content = scrollViewer,
+                Width = 600,
+                Height = 500,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen
+            };
+            window.ShowDialog();
+        }
     }
 
     private static bool AreConsecutiveDuplicates(SubtitleEntry left, SubtitleEntry right)
