@@ -93,3 +93,24 @@ public class TaskStatusResponse
     [JsonPropertyName("error")]
     public string? Error { get; set; }
 }
+
+/// <summary>
+/// Response POST /api/v1/srt/merge — kết quả ghép timestamp vào plain đã dịch.
+/// </summary>
+public class SrtMergeResponse
+{
+    [JsonPropertyName("output_path")]
+    public string OutputPath { get; set; } = string.Empty;
+
+    [JsonPropertyName("merged_count")]
+    public int MergedCount { get; set; }
+
+    [JsonPropertyName("skipped_count")]
+    public int SkippedCount { get; set; }
+
+    [JsonPropertyName("skipped_indices")]
+    public List<int> SkippedIndices { get; set; } = new();
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+}

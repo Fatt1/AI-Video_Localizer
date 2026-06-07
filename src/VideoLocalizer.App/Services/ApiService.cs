@@ -143,6 +143,34 @@ public class ApiService
         return await PostTaskAsync("/api/v1/dubbing", payload);
     }
 
+    /// <summary>
+    /// POST /api/v1/srt/merge — Ghép timestamp từ ocr.srt vào file plain đã dịch.
+    /// Đồng bộ: trả kết quả ngay (không cần task_id hay SSE streaming).
+    /// </summary>
+    /// <param name="translatedPlainPath">Đường dẫn file plain tiếng Việt đã dịch</param>
+    /// <param name="ocrSrtPath">Đường dẫn ocr.srt (để trống = tự tìm cùng folder)</param>
+    /// <param name="outputSrtPath">Đường dẫn output (để trống = tên tự động)</param>
+    public async Task<SrtMergeResponse?> MergeSrtAsync(
+        string translatedPlainPath,
+        string ocrSrtPath = "",
+        string outputSrtPath = "")
+    {
+        var payload = new
+        {
+            translated_plain_path = translatedPlainPath,
+            ocr_srt_path          = ocrSrtPath,
+            output_srt_path       = outputSrtPath,
+        };
+
+        var json    = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        var resp = await _http.PostAsync($"{_baseUrl}/api/v1/srt/merge", content);
+        resp.EnsureSuccessStatusCode();
+
+        return await resp.Content.ReadFromJsonAsync<SrtMergeResponse>(_jsonOpts);
+    }
+
     // =====================================================================
     // SSE STREAMING
     // =====================================================================

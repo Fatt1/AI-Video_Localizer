@@ -712,6 +712,88 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
+    /// <summary>
+    /// Chuẩn hóa SRT: chọn file plain đã dịch, ghép timestamp từ ocr.srt cùng folder,
+    /// tạo file SRT vietsub hoàn chỉnh và load vào DataGrid.
+    /// </summary>
+    [RelayCommand]
+    private async Task MergeSrt()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Chọn file plain đã dịch (index + text, không timestamp)",
+            Filter = "Text files|*.txt|All files|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dialog.ShowDialog() != true) return;
+
+        string plainPath = dialog.FileName;
+
+        // Kiểm tra ocr.srt cùng folder
+        string ocrSrtPath = System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(plainPath)!, "ocr.srt");
+        if (!System.IO.File.Exists(ocrSrtPath))
+        {
+            StatusMessage = $"Không tìm thấy ocr.srt trong '{System.IO.Path.GetDirectoryName(plainPath)}'.";
+            MessageBox.Show(
+                $"Không tìm thấy file ocr.srt cùng thư mục với file plain đã dịch.\n" +
+                $"Hãy đảm bảo file plain nằm cùng folder với ocr.srt:\n{ocrSrtPath}",
+                "Thiếu ocr.srt",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            SetBusy(true);
+            StatusMessage = "Đang ghép timestamp vào bản dịch...";
+
+            var result = await Api.MergeSrtAsync(plainPath);
+            if (result == null)
+            {
+                StatusMessage = "Lỗi: Backend không trả về kết quả.";
+                return;
+            }
+
+            // Load file SRT kết quả vào DataGrid
+            CurrentSrtPath = result.OutputPath;
+            var entries = SubtitleService.Parse(result.OutputPath);
+            Subtitles.Clear();
+            foreach (var e in entries) Subtitles.Add(e);
+
+            string skippedMsg = result.SkippedCount > 0
+                ? $" (bỏ qua {result.SkippedCount} dòng không khớp index)"
+                : string.Empty;
+            StatusMessage = $"Chuẩn hóa SRT hoàn tất: {result.MergedCount} dòng{skippedMsg}";
+
+            if (result.SkippedCount > 0)
+            {
+                MessageBox.Show(
+                    $"Ghép thành công {result.MergedCount} dòng.\n" +
+                    $"Bỏ qua {result.SkippedCount} dòng do không tìm thấy index tương ứng trong ocr.srt.\n" +
+                    $"Các index bị bỏ: {string.Join(", ", result.SkippedIndices.Take(20))}",
+                    "Chuẩn hóa SRT",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Lỗi chuẩn hóa SRT: {ex.Message}";
+            MessageBox.Show(
+                $"Lỗi khi ghép SRT:\n{ex.Message}",
+                "Lỗi",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
     /// <summary>Hủy task đang chạy (OCR hoặc Translate)</summary>
     [RelayCommand(CanExecute = nameof(CanCancelTask))]
     private async Task CancelCurrentTask()
@@ -805,6 +887,7 @@ public partial class MainViewModel : ObservableObject
         RunOcrCommand.NotifyCanExecuteChanged();
         RunTranslateCommand.NotifyCanExecuteChanged();
         RunDubbingCommand.NotifyCanExecuteChanged();
+        MergeSrtCommand.NotifyCanExecuteChanged();
         RefreshVoicesCommand.NotifyCanExecuteChanged();
         CancelCurrentTaskCommand.NotifyCanExecuteChanged();
     }

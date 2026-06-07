@@ -66,6 +66,9 @@
                                   ToolTip="Kéo chuột trên video để chọn vùng có hardsub"/>
                         <MenuItem Header="OCR Hardsub..." Name="MenuOcr" Click="MenuOcr_Click"/>
                         <MenuItem Header="Dịch SRT..." Name="MenuTranslate" Click="MenuTranslate_Click"/>
+                        <MenuItem Header="Chuẩn hóa SRT (Merge)..."
+                                  Command="{Binding MergeSrtCommand}"
+                                  ToolTip="Ghép timestamp từ ocr.srt vào file plain đã dịch → tạo vietsub"/>
                         <MenuItem Header="Tìm &amp; thay thế SRT..." Name="MenuFindReplace" Click="MenuFindReplace_Click"/>
                         <Separator/>
                         <MenuItem Header="STT (Phase 2)" IsEnabled="False"/>
@@ -374,6 +377,14 @@
                                Command="{Binding RunTranslateCommand}"
                                Icon="{ui:SymbolIcon Translate24}"
                                ToolTip="Chỉ dịch SRT sang tiếng Việt (không tạo audio CapCut)"
+                               Margin="0,0,4,4"/>
+
+                    <!-- Nút Chuẩn hóa SRT: ghép timestamp từ ocr.srt vào file plain đã dịch -->
+                    <ui:Button Name="BtnMergeSrt"
+                               Content="Chuẩn hóa SRT"
+                               Command="{Binding MergeSrtCommand}"
+                               Icon="{ui:SymbolIcon DocumentSync24}"
+                               ToolTip="Ghép timestamp từ ocr.srt vào file plain đã dịch → tạo vietsub hoàn chỉnh"
                                Margin="0,0,4,4"/>
 
                     <Separator Margin="0,0,4,4"/>

@@ -183,3 +183,9 @@ pyrightconfig.json
 *.sln.docstates
 [Bb]in/
 [Oo]bj/
+ 
+# Project temporary files and folders
+# Ignore top-level and nested temp directories and common temp files
+temp/
+**/temp/
+*.tmp
