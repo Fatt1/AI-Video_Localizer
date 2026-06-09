@@ -1,12 +1,14 @@
 # backend/services/srt_merge_service.py
 """
-Service ghép timestamp từ ocr.srt vào file plain đã dịch.
+Các service xử lý file SRT:
 
-Workflow:
-    1. Người dùng OCR → tạo ocr.srt + ocr_plain.txt
-    2. Người dùng dịch ocr_plain.txt bằng AI → file plain tiếng Việt
-    3. Service này đọc file plain dịch + tìm ocr.srt cùng folder
-       → ghép timestamp theo chỉ số → tạo SRT vietsub hoàn chỉnh
+1. srt_to_plain_subtitle  — Chuẩn hóa trước khi dịch:
+       Nhận file .srt bất kỳ → xuất plain txt (chỉ index + text, không timestamp)
+       Đưa vào AI dịch an toàn (AI không thể làm loạn thứ tự timestamp).
+
+2. merge_plain_to_srt  — Chuẩn hóa sau khi dịch:
+       Nhận file plain đã dịch + đọc ocr.srt cùng folder lấy timestamp
+       → ghép thành file SRT vietsub hoàn chỉnh.
 """
 from __future__ import annotations
 
@@ -39,6 +41,12 @@ class MergeResult:
     merged_count: int
     skipped_count: int
     skipped_indices: list[int]
+
+
+@dataclass
+class PlainExportResult:
+    output_path: str
+    entry_count: int
 
 
 # ─────────────────────────────────────────────────────────────
@@ -221,4 +229,62 @@ def merge_plain_to_srt(
         merged_count=merged_count,
         skipped_count=skipped_count,
         skipped_indices=skipped_indices,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# Chuẩn hóa SRT trước khi dịch
+# ─────────────────────────────────────────────────────────────
+
+def _default_plain_path(srt_path: str) -> str:
+    """Tạo tên file plain mặc định cạnh file SRT."""
+    p = Path(srt_path)
+    return str(p.parent / (p.stem + "_plain.txt"))
+
+
+def srt_to_plain_subtitle(
+    srt_path: str,
+    output_path: str | None = None,
+) -> PlainExportResult:
+    """
+    Chuẩn hóa SRT trước khi dịch:
+    Đọc file .srt → xuất plain txt (chỉ index + text, không timestamp).
+
+    Ví dụ output:
+        1
+        邦哥喝饮料
+
+        2
+        摔了个狗吃屎
+
+    Mục đích: đưa file này vào AI dịch an toàn — AI không thể làm lộn
+    thứ tự timestamp vì không có timestamp trong đầu vào.
+
+    Args:
+        srt_path: Đường dẫn file SRT gốc (thường là ocr.srt).
+        output_path: Đường dẫn file plain output.
+                     Nếu None, đặt tên tự động: <stem>_plain.txt cạnh file SRT.
+
+    Returns:
+        PlainExportResult với đường dẫn output và số entry đã xuất.
+    """
+    if output_path is None:
+        output_path = _default_plain_path(srt_path)
+
+    srt_dict = parse_srt(srt_path)  # {index: SrtEntry}
+
+    if not srt_dict:
+        raise ValueError("File SRT trống hoặc không đúng định dạng.")
+
+    # Sắp xếp theo index để đảm bảo thứ tự đúng
+    entries = sorted(srt_dict.values(), key=lambda e: e.index)
+
+    with Path(output_path).open("w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(f"{entry.index}\n")
+            f.write(f"{entry.text}\n\n")
+
+    return PlainExportResult(
+        output_path=output_path,
+        entry_count=len(entries),
     )

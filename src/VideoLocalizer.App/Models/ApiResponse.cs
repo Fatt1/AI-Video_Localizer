@@ -95,7 +95,22 @@ public class TaskStatusResponse
 }
 
 /// <summary>
-/// Response POST /api/v1/srt/merge — kết quả ghép timestamp vào plain đã dịch.
+/// Response POST /api/v1/srt/to-plain — xuất plain subtitle để dịch AI
+/// </summary>
+public class SrtToPlainResponse
+{
+    [JsonPropertyName("output_path")]
+    public string OutputPath { get; set; } = string.Empty;
+
+    [JsonPropertyName("entry_count")]
+    public int EntryCount { get; set; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Response POST /api/v1/srt/merge — kết quả ghép timestamp vào plain đã dịch
 /// </summary>
 public class SrtMergeResponse
 {

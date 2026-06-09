@@ -417,23 +417,6 @@ def frames_to_srt(entries: list[dict], output_path: str):
             f.write(f"{to_srt_time(entry['start'])} --> {to_srt_time(entry['end'])}\n")
             f.write(f"{entry['text']}\n\n")
 
-
-def entries_to_plain_subtitle(entries: list[dict], output_path: str):
-    """
-    Xuất plain subtitle — chỉ có chỉ số và text, KHÔNG có timestamp.
-    Format:
-        1
-        Nội dung câu 1
-
-        2
-        Nội dung câu 2
-
-    Dùng để đưa vào AI dịch an toàn (AI không thể làm loạn thứ tự timestamp).
-    """
-    with open(output_path, "w", encoding="utf-8") as f:
-        for i, entry in enumerate(entries, 1):
-            f.write(f"{i}\n")
-            f.write(f"{entry['text']}\n\n")
 from difflib import SequenceMatcher
 
 def post_process_ocr_entries(
@@ -684,13 +667,7 @@ async def run_ocr_pipeline(
         # Bước 3: Lưu SRT
         frames_to_srt(entries, output_srt)
 
-        # Bước 4: Xuất thêm plain subtitle (không có timestamp) để dịch AI an toàn
-        plain_path = output_srt.replace(".srt", "_plain.txt")
-        entries_to_plain_subtitle(entries, plain_path)
-        print(f"[OCR Task {task.task_id}] Đã xuất plain subtitle: {plain_path}")
-
         await task.complete(result={
             "srt_path": output_srt,
-            "plain_path": plain_path,
             "subtitle_count": len(entries),
         })

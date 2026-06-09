@@ -794,6 +794,69 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Chuẩn hóa SRT trước khi dịch: xuất plain txt (index + text, không timestamp)</summary>
+    [RelayCommand]
+    private async Task ExportPlainSubtitle()
+    {
+        string srtPath = CurrentSrtPath;
+
+        // Nếu chưa có file SRT nào mở, cho chọn file
+        if (string.IsNullOrEmpty(srtPath) || !System.IO.File.Exists(srtPath))
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Chọn file SRT cần chuẩn hóa trước khi dịch",
+                Filter = "SRT files|*.srt|All files|*.*",
+                CheckFileExists = true,
+            };
+            if (dialog.ShowDialog() != true) return;
+            srtPath = dialog.FileName;
+        }
+
+        try
+        {
+            SetBusy(true);
+            StatusMessage = "Đang xuất plain subtitle...";
+
+            var result = await Api.ExportPlainSubtitleAsync(srtPath);
+            if (result == null)
+            {
+                StatusMessage = "Lỗi: Backend không trả về kết quả.";
+                return;
+            }
+
+            StatusMessage = $"Xuất xong {result.EntryCount} dòng → {result.OutputPath}";
+
+            var ask = MessageBox.Show(
+                $"Đã xuất {result.EntryCount} dòng plain subtitle.\n" +
+                $"File: {result.OutputPath}\n\n" +
+                "Bạn có muốn mở file vừa xuất bằng trình soạn thảo mặc định không?",
+                "Chuẩn hóa trước khi dịch",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+
+            if (ask == MessageBoxResult.Yes)
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = result.OutputPath,
+                    UseShellExecute = true,
+                });
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Lỗi xuất plain subtitle: {ex.Message}";
+            MessageBox.Show(
+                $"Lỗi khi xuất:\n{ex.Message}",
+                "Lỗi",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
     /// <summary>Hủy task đang chạy (OCR hoặc Translate)</summary>
     [RelayCommand(CanExecute = nameof(CanCancelTask))]
     private async Task CancelCurrentTask()
@@ -888,6 +951,7 @@ public partial class MainViewModel : ObservableObject
         RunTranslateCommand.NotifyCanExecuteChanged();
         RunDubbingCommand.NotifyCanExecuteChanged();
         MergeSrtCommand.NotifyCanExecuteChanged();
+        ExportPlainSubtitleCommand.NotifyCanExecuteChanged();
         RefreshVoicesCommand.NotifyCanExecuteChanged();
         CancelCurrentTaskCommand.NotifyCanExecuteChanged();
     }

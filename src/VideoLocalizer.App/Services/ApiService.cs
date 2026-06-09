@@ -171,6 +171,32 @@ public class ApiService
         return await resp.Content.ReadFromJsonAsync<SrtMergeResponse>(_jsonOpts);
     }
 
+    /// <summary>
+    /// POST /api/v1/srt/to-plain — Chuẩn hóa SRT trước khi dịch.
+    /// Xuất plain txt (index + text, không timestamp) từ file SRT bất kỳ.
+    /// Đồng bộ: trả kết quả ngay.
+    /// </summary>
+    /// <param name="srtPath">Đường dẫn file SRT nguồn</param>
+    /// <param name="outputPath">Đường dẫn output (để trống = tên tự động)</param>
+    public async Task<SrtToPlainResponse?> ExportPlainSubtitleAsync(
+        string srtPath,
+        string outputPath = "")
+    {
+        var payload = new
+        {
+            srt_path    = srtPath,
+            output_path = outputPath,
+        };
+
+        var json    = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        var resp = await _http.PostAsync($"{_baseUrl}/api/v1/srt/to-plain", content);
+        resp.EnsureSuccessStatusCode();
+
+        return await resp.Content.ReadFromJsonAsync<SrtToPlainResponse>(_jsonOpts);
+    }
+
     // =====================================================================
     // SSE STREAMING
     // =====================================================================
