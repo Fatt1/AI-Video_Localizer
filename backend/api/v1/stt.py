@@ -35,7 +35,13 @@ class SttRequest(BaseModel):
         default=42,
         ge=10,
         le=120,
-        description="Số ký tự tối đa trên 1 dòng SRT (thường 35–42)"
+        description="Số ký tự tối đa trên 1 dòng SRT (thường 35–42) — chỉ là trần, không phải mục tiêu"
+    )
+    silence_gap_s: float = Field(
+        default=1.5,
+        ge=0.3,
+        le=10.0,
+        description="Khoảng lặng tối thiểu (giây) giữa 2 token để ngắt dòng SRT mới (mặc định 1.5s)"
     )
     hotwords: list[str] = Field(
         default_factory=list,
@@ -62,6 +68,7 @@ async def start_stt(req: SttRequest):
                 output_srt_path=req.output_srt_path,
                 language=req.language,
                 max_chars_per_line=req.max_chars_per_line,
+                silence_gap_s=req.silence_gap_s,
                 hotwords=req.hotwords if req.hotwords else None,
                 task=task,
             )

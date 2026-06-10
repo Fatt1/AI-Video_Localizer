@@ -31,6 +31,7 @@ async def run_stt_pipeline(
     output_srt_path: str = "",
     language: str = "中文",
     max_chars_per_line: int = 42,
+    silence_gap_s: float = 1.5,
     hotwords: list[str] | None = None,
     task: Task = None,
 ) -> None:
@@ -74,10 +75,11 @@ async def run_stt_pipeline(
     if task.is_cancelled():
         return
 
-    # ── Bước 4: Load model + nhận dạng ───────────────────────────────────
-    await task.update(20, "Đang tải model Fun-ASR-Nano (lần đầu có thể mất vài phút)...")
+    # ── Bước 4 + 5: STT + Save SRT — wrap trong try/finally để luôn giải phóng VRAM ──
+    entries = []
     try:
-        # Chạy trong executor để không block event loop
+        # Load model + nhận dạng
+        await task.update(20, "Đang tải model Fun-ASR-Nano (lần đầu có thể mất vài phút)...")
         import asyncio
         loop = asyncio.get_event_loop()
 
@@ -89,31 +91,30 @@ async def run_stt_pipeline(
                 audio_path=wav_path,
                 language=language,
                 max_chars_per_line=max_chars_per_line,
+                silence_gap_s=silence_gap_s,
                 hotwords=hotwords or [],
             )
         )
-    except Exception as e:
-        await task.fail(f"Lỗi nhận dạng giọng nói (STT): {e}")
-        return
 
-    if task.is_cancelled():
-        return
+        if task.is_cancelled():
+            return
 
-    # ── Bước 5: Build và lưu SRT ──────────────────────────────────────────
-    await task.update(88, f"Đang xuất {len(entries)} dòng SRT...")
-    try:
+        # Build và lưu SRT
+        await task.update(88, f"Đang xuất {len(entries)} dòng SRT...")
         srt_content = build_srt_content(entries)
         Path(output_srt_path).write_text(srt_content, encoding="utf-8")
         logger.info("SRT saved: %s (%d entries)", output_srt_path, len(entries))
+
     except Exception as e:
-        await task.fail(f"Lỗi lưu file SRT: {e}")
+        await task.fail(f"Lỗi STT pipeline: {e}")
         return
 
-    # ── Hoàn tất ──────────────────────────────────────────────────────────
-    await task.update(95, "Đang giải phóng VRAM...")
-    # Không unload vì có thể dùng lại ngay (optional)
-    unload_stt_model()
+    finally:
+        # ── Luôn giải phóng VRAM dù thành công hay thất bại ──────────────
+        await task.update(95, "Đang giải phóng VRAM...")
+        unload_stt_model()  # gc.collect() + torch.cuda.empty_cache() bên trong
 
+    # ── Hoàn tất ──────────────────────────────────────────────────────────
     await task.complete(result={
         "srt_path": output_srt_path,
         "subtitle_count": len(entries),

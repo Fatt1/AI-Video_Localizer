@@ -150,11 +150,13 @@ public class ApiService
     /// <param name="outputSrtPath">Đường dẫn output SRT (để trống = tự tạo)</param>
     /// <param name="language">Ngôn ngữ nhận dạng (mặc định "中文")</param>
     /// <param name="maxCharsPerLine">Số ký tự tối đa trên 1 dòng SRT</param>
+    /// <param name="silenceGapS">Khoảng lặng (giây) giữa token để ngắt dòng SRT</param>
     public async Task<TaskStartResponse?> StartSttAsync(
         string videoPath,
         string outputSrtPath = "",
         string language = "中文",
-        int maxCharsPerLine = 42)
+        int maxCharsPerLine = 42,
+        double silenceGapS = 1.5)
     {
         var payload = new
         {
@@ -162,6 +164,7 @@ public class ApiService
             output_srt_path     = outputSrtPath,
             language            = language,
             max_chars_per_line  = maxCharsPerLine,
+            silence_gap_s       = silenceGapS,
         };
         return await PostTaskAsync("/api/v1/stt", payload);
     }

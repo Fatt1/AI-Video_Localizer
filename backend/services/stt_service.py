@@ -46,17 +46,26 @@ def get_stt_model():
 
 
 def unload_stt_model():
-    """Giải phóng VRAM khi không dùng nữa."""
+    """
+    Giải phóng VRAM sau khi xong STT.
+    Cần gọi gc.collect() TRƯỚC torch.cuda.empty_cache() để Python
+    thực sự giải phóng object, sau đó CUDA mới thu hồi được memory.
+    """
     global _model
     if _model is not None:
         del _model
-        _model = None
+        _model = None 
         try:
+            import gc
             import torch  # type: ignore
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
-        logger.info("STT model unloaded.")
+            gc.collect()                    # Buộc Python GC chạy trước
+            torch.cuda.synchronize()        # Đợi GPU ops hoàn tất
+            torch.cuda.empty_cache()        # Giải phóng CUDA memory cache
+            logger.info("STT model unloaded. VRAM freed.")
+        except Exception as e:
+            logger.warning("Lỗi khi giải phóng VRAM: %s", e)
+    else:
+        logger.debug("STT model chưa được load, không cần unload.")
 
 
 # ─── Audio extraction ────────────────────────────────────────────────────────
@@ -111,69 +120,84 @@ def _build_srt_from_tokens(
     timestamps: list[dict],
     text: str,
     max_chars_per_line: int = 42,
+    silence_gap_s: float = 1.5,
 ) -> list[dict]:
     """
-    Gom token-level timestamps → SRT entries.
+    Gom token-level timestamps → SRT entries với 2 điều kiện ngắt độc lập:
 
     Fun-ASR-Nano trả về timestamps dạng token (ký tự/từ):
       [{"token": "开", "start_time": 0.42, "end_time": 0.48}, ...]
     Thời gian đơn vị là giây (seconds).
 
-    Chiến lược gom tokens:
-    1. Mỗi SRT entry không vượt quá max_chars_per_line ký tự
-    2. Ưu tiên cắt tại dấu câu (。！？，、) nếu có trong khoảng ký tự cho phép
-    3. Mỗi entry có start_time = token đầu, end_time = token cuối của nhóm
+    Điều kiện ngắt entry:
+    1. **Khoảng nghỉ (silence gap)**: khoảng cách giữa end_time token trước
+       và start_time token tiếp theo > silence_gap_s giây → ngắt ngay,
+       dù dòng ngắn cũng được. Đây là điều kiện TIÊN QUYẾT.
+    2. **Giới hạn ký tự**: nếu thêm token mới vượt max_chars_per_line
+       → ngắt tại dấu câu gần nhất, hoặc ngắt ngay nếu không có dấu câu.
+       max_chars chỉ là trần, không phải mục tiêu mỗi dòng phải đủ.
     """
     if not timestamps:
         return []
 
     entries = []
-    idx = 0
     srt_idx = 1
+    n = len(timestamps)
+    idx = 0
 
-    while idx < len(timestamps):
-        group_tokens = []
+    while idx < n:
+        group_tokens: list[dict] = []
         group_text = ""
         group_start = timestamps[idx]["start_time"]
-        last_punct_pos = -1  # vị trí dấu câu gần nhất trong group
+        last_punct_pos = -1      # vị trí (trong group_tokens) của dấu câu gần nhất
 
-        while idx < len(timestamps):
+        while idx < n:
             tok = timestamps[idx]
             token_str = tok.get("token", "")
 
-            # Kiểm tra vượt quá giới hạn ký tự (không tính dấu câu đặc biệt)
+            # ── Điều kiện 1: Khoảng nghỉ giữa token trước và token này ──────
+            if group_tokens:
+                prev_end   = group_tokens[-1]["end_time"]
+                curr_start = tok["start_time"]
+                gap = curr_start - prev_end
+                if gap >= silence_gap_s:
+                    # Dừng ở đây, token này sẽ bắt đầu entry tiếp theo
+                    break
+
+            # ── Điều kiện 2: Vượt quá giới hạn ký tự ────────────────────────
             if group_text and len(group_text) + len(token_str) > max_chars_per_line:
-                # Nếu có dấu câu trước đó → cắt tại đó
                 if last_punct_pos >= 0:
-                    # Giữ lại tokens từ last_punct_pos+1 trở đi
+                    # Cắt tại dấu câu cuối cùng trong group
                     cut_at = last_punct_pos + 1
-                    final_tokens = group_tokens[:cut_at]
                     # Trả lại tokens từ cut_at về idx để xử lý lần sau
-                    idx -= len(group_tokens) - cut_at
-                    group_tokens = final_tokens
-                    group_text = "".join(t.get("token", "") for t in final_tokens)
+                    returned = len(group_tokens) - cut_at
+                    idx -= returned
+                    group_tokens = group_tokens[:cut_at]
+                    group_text = "".join(t.get("token", "") for t in group_tokens)
+                # Dù có hay không có dấu câu → dừng tại đây
                 break
 
+            # ── Thêm token vào group ──────────────────────────────────────────
             group_tokens.append(tok)
             group_text += token_str
 
-            # Ghi nhận vị trí dấu câu
+            # Ghi nhận vị trí dấu câu (dùng cho điều kiện 2)
             if token_str in "。！？，、.!?,;；":
                 last_punct_pos = len(group_tokens) - 1
 
             idx += 1
 
+        # Bỏ qua group rỗng (idx stuck)
         if not group_tokens:
             idx += 1
             continue
 
-        group_end = group_tokens[-1]["end_time"]
         text_line = group_text.strip()
         if text_line:
             entries.append({
                 "index": srt_idx,
                 "start": group_start,
-                "end": group_end,
+                "end": group_tokens[-1]["end_time"],
                 "text": text_line,
             })
             srt_idx += 1
@@ -285,6 +309,7 @@ def transcribe_audio(
     audio_path: str,
     language: str = "中文",
     max_chars_per_line: int = 42,
+    silence_gap_s: float = 1.5,
     hotwords: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -293,7 +318,8 @@ def transcribe_audio(
     Args:
         audio_path: Đường dẫn file WAV (16kHz mono)
         language: Ngôn ngữ nhận dạng, mặc định "中文"
-        max_chars_per_line: Giới hạn ký tự mỗi dòng SRT (35–42 thông dụng)
+        max_chars_per_line: Trần ký tự mỗi dòng SRT (35–42 thông dụng)
+        silence_gap_s: Khoảng lặng (giây) giữa 2 token; vượt ngưỡng này thì ngắt entry dù dòng ngắn
         hotwords: Danh sách từ khóa ưu tiên nhận dạng
 
     Returns:
@@ -310,7 +336,10 @@ def transcribe_audio(
     if hotwords:
         generate_kwargs["hotwords"] = hotwords
 
-    logger.info("Running STT on: %s (lang=%s, max_chars=%d)", audio_path, language, max_chars_per_line)
+    logger.info(
+        "Running STT on: %s (lang=%s, max_chars=%d, silence_gap=%.1fs)",
+        audio_path, language, max_chars_per_line, silence_gap_s,
+    )
     res = model.generate(**generate_kwargs)
 
     if not res or not res[0]:
@@ -326,7 +355,11 @@ def transcribe_audio(
 
     # Ưu tiên dùng token timestamps → SRT entries chi tiết hơn
     if timestamps:
-        entries = _build_srt_from_tokens(timestamps, text, max_chars_per_line)
+        entries = _build_srt_from_tokens(
+            timestamps, text,
+            max_chars_per_line=max_chars_per_line,
+            silence_gap_s=silence_gap_s,
+        )
     elif sentence_info:
         entries = _build_srt_from_sentence_info(sentence_info, max_chars_per_line)
     else:

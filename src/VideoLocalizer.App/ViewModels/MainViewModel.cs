@@ -147,9 +147,17 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>
     /// Số ký tự tối đa trên 1 dòng SRT khi dùng STT (35–42 thông dụng).
+    /// Chỉ là trần, không phải mục tiêu — dòng có thể ngắn hơn nếu gặp khoảng lặng.
     /// </summary>
     [ObservableProperty]
     private int _sttMaxCharsPerLine = 42;
+
+    /// <summary>
+    /// Khoảng lặng tối thiểu (giây) giữa 2 token để ngắt dòng SRT mới.
+    /// Nếu khoảng lặng >= giá trị này thì ngắt dòng dù dòng có ít ký tự.
+    /// </summary>
+    [ObservableProperty]
+    private double _sttSilenceGapS = 1.5;
 
     // =====================================================================
     // PROGRESS / STATUS
@@ -696,9 +704,10 @@ public partial class MainViewModel : ObservableObject
 
         var task = await Api.StartSttAsync(
             videoPath: VideoPath,
-            outputSrtPath: string.Empty,  // Tự tạo cạnh file video
+            outputSrtPath: string.Empty,
             language: "中文",
-            maxCharsPerLine: SttMaxCharsPerLine);
+            maxCharsPerLine: SttMaxCharsPerLine,
+            silenceGapS: SttSilenceGapS);
 
         if (task == null)
         {
@@ -929,10 +938,10 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Chỉ cancel được khi đang có task chạy</summary>
     private bool CanCancelTask() => IsBusy;
 
-    // ─ Core SSE streaming logic (dùng chung cho OCR + Translate) —
+    // ─ Core SSE streaming logic (dùng chung cho OCR / Translate / STT) ────
     /// <summary>
-    /// Subscribe SSE stream của task, tự động cập nhật TaskProgress và StatusMessage.
-    /// Gọi onComplete(srtPath) khi hoàn tất.
+    /// Subscribe SSE stream của task — backend PUSH event khi có tiến độ mới.
+    /// Dừng ngay khi nhận event "complete" hoặc "error" (không poll liên tục).
     /// </summary>
     private async Task StreamTaskProgress(string taskId, Action<string?>? onComplete = null)
     {
@@ -945,37 +954,27 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            while (!ct.IsCancellationRequested)
+            // SSE stream: backend push events, FE lắng nghe 1 lần
+            // Tự dừng khi nhận event type = "complete" hoặc "error"
+            await foreach (var evt in Api.StreamTaskAsync(taskId, ct))
             {
-                var status = await Api.GetTaskStatusAsync(taskId, ct);
-                if (status == null)
-                {
-                    StatusMessage = "Đang chờ backend phản hồi trạng thái...";
-                    await Task.Delay(500, ct);
-                    continue;
-                }
-
                 // Cập nhật progress và message trên UI
-                TaskProgress = status.Progress;
-                if (!string.IsNullOrWhiteSpace(status.Message))
-                    StatusMessage = status.Message;
+                TaskProgress = evt.Progress;
+                if (!string.IsNullOrWhiteSpace(evt.Message))
+                    StatusMessage = evt.Message;
 
-                if (status.Status == "completed")
+                if (evt.Type == "complete")
                 {
-                    onComplete?.Invoke(status.Result?.SrtPath);
-                    break;
+                    onComplete?.Invoke(evt.Result?.SrtPath);
+                    break;  // Stream tự kết thúc, không cần poll thêm
                 }
 
-                if (status.Status is "failed" or "cancelled" or "error")
+                if (evt.Type == "error")
                 {
-                    var err = !string.IsNullOrWhiteSpace(status.Error)
-                        ? status.Error
-                        : status.Message;
-                    StatusMessage = $"Lỗi: {err}";
+                    StatusMessage = $"Lỗi: {evt.Message}";
                     break;
                 }
-
-                await Task.Delay(500, ct);
+                // "progress" và "keepalive" → tiếp tục lắng nghe
             }
         }
         catch (OperationCanceledException)
@@ -984,7 +983,7 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Lỗi kết nối: {ex.Message}";
+            StatusMessage = $"Lỗi kết nối SSE: {ex.Message}";
         }
         finally
         {

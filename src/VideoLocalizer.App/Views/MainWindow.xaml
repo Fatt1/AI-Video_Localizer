@@ -442,7 +442,28 @@
                         </DockPanel>
 
                         <!-- Hint text nhỏ -->
-                        <TextBlock Text="Khuyến nghị: 35–42 ký tự (tiếng Trung ~17–21 chữ/dòng)"
+                        <TextBlock Text="Trần ký tự: dòng có thể ngắn hơn nếu có khoảng lặng"
+                                   FontSize="10" Foreground="Gray" Margin="0,0,0,4"
+                                   TextWrapping="Wrap"/>
+
+                        <!-- Cấu hình khoảng lặng để ngắt dòng -->
+                        <DockPanel Margin="0,0,0,4">
+                            <TextBlock Text="Khoảng lặng:" Width="90" VerticalAlignment="Center"
+                                       ToolTip="Nếu khoảng nghỉ giữa 2 âm tiết >= giá trị này → ngắt dòng SRT mới dù dòng còn ngắn"/>
+                            <TextBlock Text="{Binding SttSilenceGapS, StringFormat={}{0:0.0}s}"
+                                       Width="66" Margin="6,0,0,0" VerticalAlignment="Center"
+                                       HorizontalAlignment="Right"
+                                       DockPanel.Dock="Right"
+                                       FontWeight="SemiBold"/>
+                            <Slider Minimum="0.5" Maximum="5.0"
+                                    TickFrequency="0.1"
+                                    IsSnapToTickEnabled="True"
+                                    Value="{Binding SttSilenceGapS, UpdateSourceTrigger=PropertyChanged}"
+                                    VerticalAlignment="Center"
+                                    ToolTip="Kéo để chọn khoảng lặng tối thiểu để ngắt subtitle (giây)"/>
+                        </DockPanel>
+
+                        <TextBlock Text="Khuyến nghị: 1.0–2.0s (ngắt khi người ta dừng &gt;= Xs)"
                                    FontSize="10" Foreground="Gray" Margin="0,0,0,6"
                                    TextWrapping="Wrap"/>
 
