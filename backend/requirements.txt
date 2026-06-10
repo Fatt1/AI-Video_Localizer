@@ -19,3 +19,6 @@ torch==2.11.0+cu128
 torchaudio==2.11.0+cu128
 torchvision==0.26.0+cu128
 torchcodec
+funasr>=1.1.0
+modelscope>=1.9.0
+soundfile>=0.12.1

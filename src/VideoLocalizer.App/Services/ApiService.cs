@@ -144,6 +144,29 @@ public class ApiService
     }
 
     /// <summary>
+    /// POST /api/v1/stt — bắt đầu Speech-to-Text pipeline bằng Fun-ASR-Nano.
+    /// </summary>
+    /// <param name="videoPath">Đường dẫn file video</param>
+    /// <param name="outputSrtPath">Đường dẫn output SRT (để trống = tự tạo)</param>
+    /// <param name="language">Ngôn ngữ nhận dạng (mặc định "中文")</param>
+    /// <param name="maxCharsPerLine">Số ký tự tối đa trên 1 dòng SRT</param>
+    public async Task<TaskStartResponse?> StartSttAsync(
+        string videoPath,
+        string outputSrtPath = "",
+        string language = "中文",
+        int maxCharsPerLine = 42)
+    {
+        var payload = new
+        {
+            video_path          = videoPath,
+            output_srt_path     = outputSrtPath,
+            language            = language,
+            max_chars_per_line  = maxCharsPerLine,
+        };
+        return await PostTaskAsync("/api/v1/stt", payload);
+    }
+
+    /// <summary>
     /// POST /api/v1/srt/merge — Ghép timestamp từ ocr.srt vào file plain đã dịch.
     /// Đồng bộ: trả kết quả ngay (không cần task_id hay SSE streaming).
     /// </summary>

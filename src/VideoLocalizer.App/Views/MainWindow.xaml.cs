@@ -263,6 +263,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             VM.RunDubbingCommand.Execute(null);
     }
 
+    private void MenuStt_Click(object sender, RoutedEventArgs e)
+    {
+        // Delegate sang RunSttCommand — giống bấm nút trên toolbar
+        if (VM.RunSttCommand.CanExecute(null))
+            VM.RunSttCommand.Execute(null);
+    }
+
     private void BtnFindReplace_Click(object sender, RoutedEventArgs e)
     {
         OpenFindReplaceDialog();

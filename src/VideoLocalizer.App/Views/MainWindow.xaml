@@ -74,7 +74,8 @@
                                   ToolTip="Ghép timestamp từ ocr.srt vào file plain đã dịch → tạo vietsub"/>
                         <MenuItem Header="Tìm &amp; thay thế SRT..." Name="MenuFindReplace" Click="MenuFindReplace_Click"/>
                         <Separator/>
-                        <MenuItem Header="STT (Phase 2)" IsEnabled="False"/>
+                        <MenuItem Header="Speech-to-Text (Fun-ASR-Nano)..." Name="MenuStt" Click="MenuStt_Click"
+                                  ToolTip="Nhận dạng giọng nói từ video tiếng Trung → SRT"/>
                         <MenuItem Header="Dubbing (OmniVoice -> CapCut)..." Name="MenuDubbing" Click="MenuDubbing_Click"/>
                     </MenuItem>
 
@@ -272,6 +273,8 @@
                     <RowDefinition Height="Auto"/>
                     <!-- Toolbar (Load SRT, Save, Export) -->
                     <RowDefinition Height="Auto"/>
+                    <!-- STT section -->
+                    <RowDefinition Height="Auto"/>
                     <!-- Dubbing section -->
                     <RowDefinition Height="Auto"/>
                     <!-- DataGrid (chiếm phần còn lại) -->
@@ -366,6 +369,13 @@
                                ToolTip="Tìm gần đúng trong SRT và thay thế toàn bộ trên danh sách hiện tại"/>
                     <Separator Margin="0,0,4,4"/>
 
+                    <ui:Button Name="BtnRunStt"
+                               Content="Speech-to-Text"
+                               Command="{Binding RunSttCommand}"
+                               Icon="{ui:SymbolIcon MicRecord24}"
+                               ToolTip="Nhận dạng giọng nói từ video (Fun-ASR-Nano Tiếng Trung) → SRT"
+                               Margin="0,0,4,4"/>
+
                     <!-- Nút chạy OCR: bind vào RunOcrCommand (có CanExecute = !IsBusy) -->
                     <ui:Button Name="BtnRunOcr"
                                Content="Chạy OCR"
@@ -410,8 +420,43 @@
                                ToolTip="Hủy task đang chạy"/>
                 </ToolBar>
 
+                <!-- ── STT / Fun-ASR-Nano Section ── -->
+                <GroupBox Grid.Row="3" Header="Speech-to-Text (Fun-ASR-Nano → Tiếng Trung)"
+                          Margin="6,4,6,0" Padding="6,4">
+                    <StackPanel>
+                        <!-- Cấu hình số ký tự tối đa / dòng SRT -->
+                        <DockPanel Margin="0,0,0,6">
+                            <TextBlock Text="Ký tự/dòng:" Width="90" VerticalAlignment="Center"
+                                       ToolTip="Số ký tự tối đa trên 1 dòng SRT (khuyến nghị 35–42)"/>
+                            <TextBlock Text="{Binding SttMaxCharsPerLine, StringFormat={}{0} ký tự}"
+                                       Width="66" Margin="6,0,0,0" VerticalAlignment="Center"
+                                       HorizontalAlignment="Right"
+                                       DockPanel.Dock="Right"
+                                       FontWeight="SemiBold"/>
+                            <Slider Minimum="20" Maximum="80"
+                                    TickFrequency="1"
+                                    IsSnapToTickEnabled="True"
+                                    Value="{Binding SttMaxCharsPerLine, UpdateSourceTrigger=PropertyChanged}"
+                                    VerticalAlignment="Center"
+                                    ToolTip="Kéo để chọn số ký tự tối đa mỗi dòng SRT"/>
+                        </DockPanel>
+
+                        <!-- Hint text nhỏ -->
+                        <TextBlock Text="Khuyến nghị: 35–42 ký tự (tiếng Trung ~17–21 chữ/dòng)"
+                                   FontSize="10" Foreground="Gray" Margin="0,0,0,6"
+                                   TextWrapping="Wrap"/>
+
+                        <ui:Button Content="Nhận dạng giọng nói → SRT"
+                                   Command="{Binding RunSttCommand}"
+                                   Icon="{ui:SymbolIcon MicRecord24}"
+                                   HorizontalAlignment="Stretch"
+                                   Appearance="Primary"
+                                   ToolTip="Fun-ASR-Nano: nhận dạng tiếng Trung từ video → tạo SRT với timestamps"/>
+                    </StackPanel>
+                </GroupBox>
+
                 <!-- ── Dubbing / OmniVoice Section ── -->
-                <GroupBox Grid.Row="3" Header="Dubbing (OmniVoice -> CapCut)"
+                <GroupBox Grid.Row="4" Header="Dubbing (OmniVoice -> CapCut)"
                           Margin="6,4,6,0" Padding="6,4">
                     <StackPanel>
                         <DockPanel Margin="0,0,0,6">
@@ -455,7 +500,7 @@
                 <!-- ── DataGrid: hiển thị subtitle entries ── -->
                 <!-- SelectedItem bind → ViewModel.SelectedSubtitle để sync với video -->
                 <!-- MouseDoubleClick: double-click dòng → seek video đến timestamp đó -->
-                <DataGrid Grid.Row="4"
+                <DataGrid Grid.Row="5"
                           Name="SubtitleGrid"
                           ItemsSource="{Binding Subtitles}"
                           SelectedItem="{Binding SelectedSubtitle}"

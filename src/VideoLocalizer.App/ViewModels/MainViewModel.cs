@@ -142,6 +142,16 @@ public partial class MainViewModel : ObservableObject
     private double _speechRate = 1.0;
 
     // =====================================================================
+    // STT SETTINGS (Fun-ASR-Nano)
+    // =====================================================================
+
+    /// <summary>
+    /// Số ký tự tối đa trên 1 dòng SRT khi dùng STT (35–42 thông dụng).
+    /// </summary>
+    [ObservableProperty]
+    private int _sttMaxCharsPerLine = 42;
+
+    // =====================================================================
     // PROGRESS / STATUS
     // =====================================================================
 
@@ -665,6 +675,50 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Chạy STT: nhận dạng giọng nói từ video hiện tại bằng Fun-ASR-Nano.
+    /// Flow: POST /api/v1/stt → task_id → poll status → load SRT vào DataGrid.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanRunTask))]
+    private async Task RunStt()
+    {
+        if (string.IsNullOrEmpty(VideoPath))
+        {
+            StatusMessage = "Vui lòng mở video trước khi chạy STT.";
+            return;
+        }
+
+        if (SttMaxCharsPerLine < 10 || SttMaxCharsPerLine > 120)
+        {
+            StatusMessage = "Số ký tự/dòng phải nằm trong khoảng 10–120.";
+            return;
+        }
+
+        var task = await Api.StartSttAsync(
+            videoPath: VideoPath,
+            outputSrtPath: string.Empty,  // Tự tạo cạnh file video
+            language: "中文",
+            maxCharsPerLine: SttMaxCharsPerLine);
+
+        if (task == null)
+        {
+            StatusMessage = "Lỗi: Không thể bắt đầu STT. Kiểm tra backend đang chạy.";
+            return;
+        }
+
+        await StreamTaskProgress(task.TaskId, onComplete: srtPath =>
+        {
+            if (!string.IsNullOrEmpty(srtPath) && System.IO.File.Exists(srtPath))
+            {
+                CurrentSrtPath = srtPath;
+                var entries = SubtitleService.Parse(srtPath);
+                Subtitles.Clear();
+                foreach (var e in entries) Subtitles.Add(e);
+                StatusMessage = $"STT hoàn tất (Fun-ASR-Nano): {entries.Count} dòng subtitle";
+            }
+        });
+    }
+
     /// <summary>Chạy dubbing: TTS bằng OmniVoice rồi inject audio vào CapCut project.</summary>
     [RelayCommand(CanExecute = nameof(CanRunTask))]
     private async Task RunDubbing()
@@ -950,6 +1004,7 @@ public partial class MainViewModel : ObservableObject
         RunOcrCommand.NotifyCanExecuteChanged();
         RunTranslateCommand.NotifyCanExecuteChanged();
         RunDubbingCommand.NotifyCanExecuteChanged();
+        RunSttCommand.NotifyCanExecuteChanged();
         MergeSrtCommand.NotifyCanExecuteChanged();
         ExportPlainSubtitleCommand.NotifyCanExecuteChanged();
         RefreshVoicesCommand.NotifyCanExecuteChanged();
