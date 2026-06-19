@@ -127,6 +127,46 @@ class TaskManager:
         if not task:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Task không tồn tại'})}\n\n"
             return
+
+        # ── FIX RACE CONDITION ───────────────────────────────────────────────
+        # Nếu FE subscribe vào stream SAU KHI task đã complete/fail,
+        # queue sẽ rỗng và FE kẹt chờ mãi (20s keepalive timeout lặp mãi).
+        # → Gửi ngay event từ trạng thái hiện tại của task rồi đóng stream.
+        if task.status == TaskStatus.COMPLETED:
+            event = {
+                "type": "complete",
+                "task_id": task.task_id,
+                "progress": 100,
+                "message": task.message or "Hoàn thành!",
+                "status": TaskStatus.COMPLETED.value,
+                "result": task.result,
+            }
+            yield f"data: {json.dumps(event)}\n\n"
+            return
+
+        if task.status == TaskStatus.FAILED:
+            event = {
+                "type": "error",
+                "task_id": task.task_id,
+                "progress": task.progress,
+                "message": task.error or task.message,
+                "status": TaskStatus.FAILED.value,
+            }
+            yield f"data: {json.dumps(event)}\n\n"
+            return
+
+        if task.status == TaskStatus.CANCELLED:
+            event = {
+                "type": "error",
+                "task_id": task.task_id,
+                "progress": task.progress,
+                "message": "Task đã bị hủy",
+                "status": TaskStatus.CANCELLED.value,
+            }
+            yield f"data: {json.dumps(event)}\n\n"
+            return
+        # ── END FIX ──────────────────────────────────────────────────────────
+
         queue = task.subscribe()
         try:
             while True:
