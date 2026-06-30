@@ -369,12 +369,20 @@
                                ToolTip="Tìm gần đúng trong SRT và thay thế toàn bộ trên danh sách hiện tại"/>
                     <Separator Margin="0,0,4,4"/>
 
+                    <ui:Button Name="BtnTtsDialog"
+                               Content="Tạo giọng nói"
+                               Icon="{ui:SymbolIcon Speaker224}"
+                               Click="BtnTtsDialog_Click"
+                               Margin="0,0,4,4"
+                               ToolTip="Mở popup tạo giọng nói độc lập từ văn bản (không cần SRT)"/>
+
                     <ui:Button Name="BtnRunStt"
                                Content="Speech-to-Text"
                                Command="{Binding RunSttCommand}"
                                Icon="{ui:SymbolIcon MicRecord24}"
                                ToolTip="Nhận dạng giọng nói từ video (Fun-ASR-Nano Tiếng Trung) → SRT"
                                Margin="0,0,4,4"/>
+
 
                     <!-- Nút chạy OCR: bind vào RunOcrCommand (có CanExecute = !IsBusy) -->
                     <ui:Button Name="BtnRunOcr"

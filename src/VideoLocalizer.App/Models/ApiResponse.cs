@@ -129,3 +129,24 @@ public class SrtMergeResponse
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// Response POST /api/v1/tts/synthesize — kết quả tổng hợp giọng nói từ text thuần
+/// </summary>
+public class TtsSynthesizeResponse
+{
+    [JsonPropertyName("audio_path")]
+    public string AudioPath { get; set; } = string.Empty;
+
+    [JsonPropertyName("audio_filename")]
+    public string AudioFilename { get; set; } = string.Empty;
+
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = string.Empty;
+
+    [JsonPropertyName("voice_id")]
+    public string VoiceId { get; set; } = string.Empty;
+
+    [JsonPropertyName("speech_rate")]
+    public double SpeechRate { get; set; }
+}

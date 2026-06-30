@@ -270,6 +270,19 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             VM.RunSttCommand.Execute(null);
     }
 
+    /// <summary>
+    /// Mở popup TtsDialog — tạo giọng nói độc lập từ văn bản (không cần SRT).
+    /// </summary>
+    private void BtnTtsDialog_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new TtsDialog(VM.Api)
+        {
+            Owner = this,
+        };
+        // ShowDialog() — modal, user có thể mở rồi đóng bình thường
+        dialog.ShowDialog();
+    }
+
     private void BtnFindReplace_Click(object sender, RoutedEventArgs e)
     {
         OpenFindReplaceDialog();
