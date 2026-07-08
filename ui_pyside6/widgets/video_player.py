@@ -40,10 +40,11 @@ class _OcrOverlay(QWidget):
     region_selected = Signal(QRect)
 
     def __init__(self, parent: QWidget):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        # Must be a top-level tool window to overlay correctly over native VLC child on Windows
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         # CRITICAL: allow painting without Qt blocking transparency
         self.setAutoFillBackground(False)
         self.setMouseTracking(True)
@@ -73,6 +74,12 @@ class _OcrOverlay(QWidget):
     def paintEvent(self, event):
         """Draw only a thin border + instruction label — NO dark fill."""
         p = QPainter(self)
+        
+        # CRITICAL WINDOWS FIX: 
+        # If alpha is exactly 0, Windows DWM treats the window as click-through (HTTRANSPARENT).
+        # We must draw a 1/255 alpha background so it captures mouse events!
+        p.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        
         # Just a visible border so user knows overlay is active
         p.setPen(QPen(QColor("#f5a623"), 2))
         p.drawRect(self.rect().adjusted(1, 1, -1, -1))
@@ -145,6 +152,7 @@ class VideoPlayerWidget(QWidget):
         self._media_player  = None
         self._duration_ms:  int  = 0
         self._is_seeking:   bool = False
+        self._ocr_mode:     bool = False
 
         self._build_ui()
 
@@ -225,7 +233,20 @@ class VideoPlayerWidget(QWidget):
         cw = self._video_container.width()
         ch = self._video_container.height()
         self._video_frame.setGeometry(0, 0, cw, ch)
-        self._ocr_overlay.setGeometry(0, 0, cw, ch)
+        
+        # Sync top-level overlay geometry if active
+        if self._ocr_mode:
+            self._sync_overlay_geometry()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self._ocr_mode:
+            self.exit_ocr_mode()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if self._ocr_mode:
+            self._sync_overlay_geometry()
 
     # ── VLC init ──────────────────────────────────────────────────────────────
     def _init_vlc(self):
@@ -307,10 +328,19 @@ class VideoPlayerWidget(QWidget):
             self._media_player.audio_set_volume(max(0, min(100, vol)))
 
     def enter_ocr_mode(self):
+        self._ocr_mode = True
+        self._sync_overlay_geometry()
         self._ocr_overlay.show_hint()
 
     def exit_ocr_mode(self):
+        self._ocr_mode = False
         self._ocr_overlay.hide_overlay()
+
+    def _sync_overlay_geometry(self):
+        """Map overlay to exact global screen position of the video frame."""
+        if self._video_frame and self._video_frame.isVisible():
+            global_pt = self._video_frame.mapToGlobal(QPoint(0, 0))
+            self._ocr_overlay.setGeometry(QRect(global_pt, self._video_frame.size()))
 
     def take_snapshot(self, out_path: str) -> bool:
         if not self._media_player:
