@@ -233,7 +233,7 @@ class SubtitleEditorPanel(QWidget):
 
         self._ocr_fps = QDoubleSpinBox()
         self._ocr_fps.setRange(0.5, 60.0)
-        self._ocr_fps.setValue(2.0)
+        self._ocr_fps.setValue(4.0)
         self._ocr_fps.setSingleStep(0.5)
         self._ocr_fps.setDecimals(1)
         s_lay.addRow("FPS:", self._ocr_fps)
