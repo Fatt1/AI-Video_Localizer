@@ -557,7 +557,7 @@ class MainWindow(QMainWindow):
 
         worker.task_finished.connect(on_finished)
 
-    def _run_stt(self, max_chars: int, silence_gap: float):
+    def _run_stt(self, model_key: str, language: str, silence_gap: float, use_diarization: bool):
         if not self._video_path:
             QMessageBox.warning(self, "STT", "Chưa mở video.")
             return
@@ -568,9 +568,10 @@ class MainWindow(QMainWindow):
         worker = SttWorker(
             video_path=self._video_path,
             output_srt=out_srt,
-            language="中文",
-            max_chars_per_line=max_chars,
+            model_key=model_key,
+            language=language,
             silence_gap_s=silence_gap,
+            use_diarization=use_diarization,
         )
         self._start_worker(worker, "STT")
 

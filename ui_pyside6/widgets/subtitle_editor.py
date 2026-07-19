@@ -51,7 +51,7 @@ class SubtitleEditorPanel(QWidget):
     run_ocr_requested    = Signal(str, float, str)  # (lang_code, fps, out_srt_path)
 
     # STT
-    run_stt_requested = Signal(int, float)   # (max_chars, silence_gap_s)
+    run_stt_requested = Signal(str, str, float, bool)  # (model_key, language, silence_gap_s, use_diarization)
 
     # Dubbing
     run_dubbing_requested = Signal(str, str, float)  # (voice_id, capcut_project, rate)
@@ -264,20 +264,42 @@ class SubtitleEditorPanel(QWidget):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(10)
 
-        grp = QGroupBox("Speech-to-Text (Fun-ASR-Nano)")
+        grp = QGroupBox("Speech-to-Text")
         g_lay = QFormLayout(grp)
         g_lay.setSpacing(8)
 
-        self._stt_max_chars = QSpinBox()
-        self._stt_max_chars.setRange(20, 80)
-        self._stt_max_chars.setValue(42)
-        self._stt_max_chars.setSuffix(" ký tự")
-        g_lay.addRow("Ký tự/dòng:", self._stt_max_chars)
+        # Model
+        self._stt_model = QComboBox()
+        self._stt_model.setObjectName("stt_model_combo")
+        from services.stt_service import AVAILABLE_MODELS
+        for key, label in AVAILABLE_MODELS.items():
+            self._stt_model.addItem(label, userData=key)
+        self._stt_model.setCurrentIndex(0)
+        g_lay.addRow("ð¤ Model:", self._stt_model)
 
-        hint1 = QLabel("Trần ký tự: dòng có thể ngắn hơn nếu có khoảng lặng")
-        hint1.setStyleSheet("color:#555568; font-size:10px;")
-        hint1.setWordWrap(True)
-        g_lay.addRow("", hint1)
+        # Language
+        self._stt_lang = QComboBox()
+        self._stt_lang.setObjectName("stt_lang_combo")
+        self._stt_lang.addItems([
+            "zh — Tiếng Trung",
+            "en — Tiếng Anh",
+            "ja — Tiếng Nhật",
+            "ko — Tiếng Hàn",
+            "vi — Tiếng Việt",
+            "auto — Tự động",
+        ])
+        self._stt_lang.setCurrentIndex(0)
+        g_lay.addRow("🌐 Ngôn ngữ:", self._stt_lang)
+
+        # Diarization
+        self._stt_diarization = QCheckBox("Bật — nhận biết nhiều người nói")
+        self._stt_diarization.setChecked(False)
+        g_lay.addRow("👥 Người nói:", self._stt_diarization)
+
+        hint_diar = QLabel("⚠ Bật sẽ load thêm model cam++ (tốn VRAM hơn)")
+        hint_diar.setStyleSheet("color:#f5a623; font-size:10px;")
+        hint_diar.setWordWrap(True)
+        g_lay.addRow("", hint_diar)
 
         self._stt_silence_gap = QDoubleSpinBox()
         self._stt_silence_gap.setRange(0.5, 5.0)
@@ -285,24 +307,24 @@ class SubtitleEditorPanel(QWidget):
         self._stt_silence_gap.setSingleStep(0.1)
         self._stt_silence_gap.setDecimals(1)
         self._stt_silence_gap.setSuffix(" s")
-        g_lay.addRow("Khoảng lặng:", self._stt_silence_gap)
+        g_lay.addRow("⏸ Khoảng lặng:", self._stt_silence_gap)
 
-        hint2 = QLabel("Khuyến nghị: 1.0–2.0s (ngắt khi người dừng >= Xs)")
-        hint2.setStyleSheet("color:#555568; font-size:10px;")
-        hint2.setWordWrap(True)
-        g_lay.addRow("", hint2)
+        hint_gap = QLabel("FunASR Nano: ngắt dòng khi ngừng nói ≥ Xs. Không ảnh hưởng Qwen3 / Paraformer.")
+        hint_gap.setStyleSheet("color:#555568; font-size:10px;")
+        hint_gap.setWordWrap(True)
+        g_lay.addRow("", hint_gap)
 
         lay.addWidget(grp)
 
-        self._btn_run_stt = QPushButton("🎙  Nhận dạng giọng nói → SRT")
+        self._btn_run_stt = QPushButton("🎤  Nhận dạng giọng nói → SRT")
         self._btn_run_stt.setObjectName("btn_run_stt")
         self._btn_run_stt.clicked.connect(self._on_run_stt)
         lay.addWidget(self._btn_run_stt)
 
-        hint3 = QLabel("⚠ Fun-ASR-Nano cần CUDA và phải load model (~1 phút lần đầu)")
-        hint3.setStyleSheet("color:#f5a623; font-size:10px; padding:4px;")
-        hint3.setWordWrap(True)
-        lay.addWidget(hint3)
+        hint_model = QLabel("⚠ Lần đầu chạy sẽ tải model về (~vài phút), cần CUDA")
+        hint_model.setStyleSheet("color:#f5a623; font-size:10px; padding:4px;")
+        hint_model.setWordWrap(True)
+        lay.addWidget(hint_model)
         lay.addStretch()
 
         return self._scrollable(content)
@@ -464,9 +486,12 @@ class SubtitleEditorPanel(QWidget):
         self.run_ocr_requested.emit(lang_code, fps, out_path)
 
     def _on_run_stt(self):
-        max_chars   = self._stt_max_chars.value()
-        silence_gap = self._stt_silence_gap.value()
-        self.run_stt_requested.emit(max_chars, silence_gap)
+        model_key       = self._stt_model.currentData()
+        lang_text       = self._stt_lang.currentText()
+        lang_code       = lang_text.split(" — ")[0].strip()
+        silence_gap     = self._stt_silence_gap.value()
+        use_diarization = self._stt_diarization.isChecked()
+        self.run_stt_requested.emit(model_key, lang_code, silence_gap, use_diarization)
 
     def _on_run_dubbing(self):
         voice_id = self._voice_combo.currentData()

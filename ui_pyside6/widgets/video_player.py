@@ -253,7 +253,9 @@ class VideoPlayerWidget(QWidget):
         try:
             self._vlc_instance = vlc.Instance(
                 "--no-xlib",
-                "--avcodec-hw=none",    # disable D3D11VA HW errors
+                "--avcodec-hw=none",          # disable D3D11VA HW errors
+                "--no-sub-autodetect-file",   # don't auto-load external subtitle files
+                "--sub-track=-1",             # no subtitle track by default
                 "--quiet",
             )
         except Exception:
@@ -278,7 +280,19 @@ class VideoPlayerWidget(QWidget):
         self._media_player.play()
         self._duration_ms = 0
         self._btn_play.setText("⏸")
+        # Disable built-in subtitle rendering (SPU track = -1 means no subtitles)
+        # Use a short delay to let VLC parse the media before setting SPU
+        QTimer.singleShot(500, self._disable_subtitles)
+
         return True
+
+    def _disable_subtitles(self):
+        """Turn off VLC's built-in subtitle track (SPU -1 = disabled)."""
+        if self._media_player:
+            try:
+                self._media_player.video_set_spu(-1)
+            except Exception:
+                pass
 
     def toggle_play_pause(self):
         if not self._media_player:

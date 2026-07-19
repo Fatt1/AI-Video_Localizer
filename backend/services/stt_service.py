@@ -1,381 +1,439 @@
 # backend/services/stt_service.py
 """
-Speech-to-Text service sử dụng FunASR Fun-ASR-Nano-2512.
+Speech-to-Text service — hỗ trợ nhiều model:
 
-- Model hỗ trợ 31 ngôn ngữ, tích hợp dấu câu natively (không cần punc_model)
-- Output: res[0]["text"] và res[0]["timestamps"] (token-level)
-- timestamps format: [{"token": "开", "start_time": 0.42, "end_time": 0.48}, ...]
-- Từ token-level timestamps → gom thành sentences → xuất SRT
+  1. funasr-nano  : FunAudioLLM/Fun-ASR-Nano-2512 — 31 ngôn ngữ, token timestamps
+  2. qwen3-asr   : Qwen/Qwen3-ASR-1.7B — 52 ngôn ngữ, LLM-based, sentence_info
+  3. paraformer  : paraformer-zh + fsmn-vad + ct-punc — Tiếng Trung chuyên biệt,
+                    trả về character timestamps dạng [[start_ms, end_ms], ...]
+
+Mỗi model có cache riêng và hỗ trợ diarization (cam++) tuỳ chọn.
 """
 from __future__ import annotations
 
 import logging
 import os
 import subprocess
-import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from core.config import FFMPEG_PATH, TEMP_DIR
 
 logger = logging.getLogger(__name__)
 
-# ─── Lazy-load model (tốn VRAM, chỉ khởi tạo 1 lần) ───────────────────────
-_model = None
+# ─── Hằng số model key ────────────────────────────────────────────────────────
+MODEL_FUNASR_NANO = "funasr-nano"
+MODEL_QWEN3_ASR   = "qwen3-asr"
+MODEL_PARAFORMER  = "paraformer"
 
-def get_stt_model():
-    """Lazy-load Fun-ASR-Nano. Gọi lần đầu sẽ tải model (~HuggingFace)."""
-    global _model
-    if _model is None:
-        from funasr import AutoModel  # type: ignore
-        logger.info("Loading Fun-ASR-Nano-2512 model (lần đầu có thể mất vài phút)...")
-        _model = AutoModel(
-            model="FunAudioLLM/Fun-ASR-Nano-2512",
-            trust_remote_code=True,
-            remote_code="./model.py",
-            vad_model="fsmn-vad",
-            vad_kwargs={"max_single_segment_time": 30000},
-            device="cuda:0",
-            hub="hf",
-            disable_update=True,
-            disable_pbar=True,
-            log_level="ERROR",
-        )
-        logger.info("Fun-ASR-Nano-2512 model loaded OK.")
-    return _model
+# Danh sách model hiển thị cho UI
+AVAILABLE_MODELS: dict[str, str] = {
+    MODEL_FUNASR_NANO : "FunASR Nano 2512 (31 ngôn ngữ)",
+    MODEL_QWEN3_ASR   : "Qwen3 ASR 1.7B (52 ngôn ngữ)",
+    MODEL_PARAFORMER  : "Paraformer-ZH (Tiếng Trung)",
+}
+
+# ─── Model caches (mỗi model 1 slot) ─────────────────────────────────────────
+_models: dict[str, object]     = {}   # model_key → AutoModel instance
+_model_diar: dict[str, bool]   = {}   # model_key → has_diarization
 
 
-def unload_stt_model():
+def _set_hf_env():
+    """Tắt symlink HuggingFace trên Windows để tránh WinError 1314."""
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+    os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
+
+def _free_vram():
+    try:
+        import gc, torch  # type: ignore
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    except Exception as e:
+        logger.warning("Lỗi giải phóng VRAM: %s", e)
+
+
+# ─── Loader cho từng model ────────────────────────────────────────────────────
+
+def _load_funasr_nano(use_diarization: bool):
+    from funasr import AutoModel  # type: ignore
+    logger.info("Loading FunASR Nano 2512 (diarization=%s)...", use_diarization)
+    kwargs: dict = {
+        "model"            : "FunAudioLLM/Fun-ASR-Nano-2512",
+        "trust_remote_code": True,
+        "remote_code"      : "./model.py",
+        "vad_model"        : "fsmn-vad",
+        "vad_kwargs"       : {"max_single_segment_time": 30000},
+        "device"           : "cuda:0",
+        "hub"              : "hf",
+        "disable_update"   : True,
+        "disable_pbar"     : True,
+        "log_level"        : "ERROR",
+    }
+    if use_diarization:
+        kwargs["spk_model"]   = "cam++"
+        kwargs["spk_kwargs"]  = {"trust_remote_code": True}
+        kwargs["punc_model"]  = "ct-punc"   # bắt buộc khi dùng cam++ để phân đoạn câu chính xác
+    return AutoModel(**kwargs)
+
+
+def _load_qwen3_asr(use_diarization: bool):
+    from funasr import AutoModel  # type: ignore
+    logger.info("Loading Qwen3 ASR 1.7B (diarization=%s)...", use_diarization)
+    kwargs: dict = {
+        "model"       : "Qwen/Qwen3-ASR-1.7B",
+        "hub"         : "hf",
+        "device"      : "cuda:0",
+        "dtype"       : "bf16",
+        "vad_model"   : "fsmn-vad",
+        "vad_kwargs"  : {"max_single_segment_time": 30000},
+        "disable_update": True,
+        "disable_pbar": True,
+        "log_level"   : "ERROR",
+    }
+    if use_diarization:
+        kwargs["spk_model"]  = "cam++"
+        kwargs["spk_kwargs"] = {"trust_remote_code": True}
+        kwargs["punc_model"] = "ct-punc"   # bắt buộc khi dùng cam++ để phân đoạn câu chính xác
+    return AutoModel(**kwargs)
+
+
+def _load_paraformer(use_diarization: bool):
+    from funasr import AutoModel  # type: ignore
+    logger.info("Loading Paraformer-ZH (diarization=%s)...", use_diarization)
+    # "paraformer-zh" là shorthand chỉ hoạt động với ModelScope (hub="ms")
+    # Không dùng hub="hf" ở đây — để mặc định "ms"
+    kwargs: dict = {
+        "model"      : "paraformer-zh",
+        "vad_model"  : "fsmn-vad",
+        "vad_kwargs" : {"max_single_segment_time": 60000},
+        "punc_model" : "ct-punc",
+        "disable_update": True,
+        "disable_pbar"  : True,
+        "log_level"     : "ERROR",
+    }
+    if use_diarization:
+        kwargs["spk_model"]  = "cam++"
+        kwargs["spk_kwargs"] = {"trust_remote_code": True}
+    return AutoModel(**kwargs)
+
+
+_LOADERS = {
+    MODEL_FUNASR_NANO: _load_funasr_nano,
+    MODEL_QWEN3_ASR  : _load_qwen3_asr,
+    MODEL_PARAFORMER : _load_paraformer,
+}
+
+
+def get_stt_model(model_key: str = MODEL_FUNASR_NANO, use_diarization: bool = False):
+    """Lazy-load model theo key. Reload nếu thay đổi diarization."""
+    global _models, _model_diar
+    if model_key not in AVAILABLE_MODELS:
+        raise ValueError(f"Model không hợp lệ: '{model_key}'. Chọn: {list(AVAILABLE_MODELS)}")
+
+    if model_key in _models and _model_diar.get(model_key) != use_diarization:
+        logger.info("Diarization state changed for %s. Reloading...", model_key)
+        unload_stt_model(model_key)
+
+    if model_key not in _models:
+        _set_hf_env()
+        _models[model_key]   = _LOADERS[model_key](use_diarization)
+        _model_diar[model_key] = use_diarization
+        logger.info("%s loaded OK.", model_key)
+
+    return _models[model_key]
+
+
+def unload_stt_model(model_key: str | None = None):
     """
-    Giải phóng VRAM sau khi xong STT.
-    Cần gọi gc.collect() TRƯỚC torch.cuda.empty_cache() để Python
-    thực sự giải phóng object, sau đó CUDA mới thu hồi được memory.
+    Giải phóng VRAM.
+    - model_key=None → unload tất cả models đang loaded.
+    - model_key=str  → chỉ unload model đó.
     """
-    global _model
-    if _model is not None:
-        del _model
-        _model = None 
-        try:
-            import gc
-            import torch  # type: ignore
-            gc.collect()                    # Buộc Python GC chạy trước
-            torch.cuda.synchronize()        # Đợi GPU ops hoàn tất
-            torch.cuda.empty_cache()        # Giải phóng CUDA memory cache
-            logger.info("STT model unloaded. VRAM freed.")
-        except Exception as e:
-            logger.warning("Lỗi khi giải phóng VRAM: %s", e)
+    global _models, _model_diar
+    keys = list(_models.keys()) if model_key is None else [model_key]
+    for k in keys:
+        if k in _models:
+            del _models[k]
+            _model_diar.pop(k, None)
+            logger.info("Unloaded %s.", k)
+    if keys:
+        _free_vram()
     else:
-        logger.debug("STT model chưa được load, không cần unload.")
+        logger.debug("Không có model nào cần unload.")
 
 
-# ─── Audio extraction ────────────────────────────────────────────────────────
+# ─── Audio extraction ─────────────────────────────────────────────────────────
 
 def extract_audio(video_path: str, output_wav: str) -> str:
-    """
-    Dùng FFmpeg để trích xuất audio từ video → WAV mono 16kHz.
-    Fun-ASR-Nano yêu cầu 16kHz mono WAV để nhận dạng chính xác nhất.
-    """
+    """FFmpeg: video → WAV mono 16kHz."""
     cmd = [
-        FFMPEG_PATH,
-        "-y",                  # Overwrite output
+        FFMPEG_PATH, "-y",
         "-i", video_path,
-        "-vn",                 # Bỏ video track
-        "-acodec", "pcm_s16le",  # PCM 16-bit
-        "-ar", "16000",        # 16kHz sample rate
-        "-ac", "1",            # Mono
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-ac", "1",
         output_wav,
     ]
     logger.info("Extracting audio: %s → %s", video_path, output_wav)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"FFmpeg trích xuất audio thất bại:\n{result.stderr[-500:]}"
-        )
+        raise RuntimeError(f"FFmpeg trích xuất audio thất bại:\n{result.stderr[-500:]}")
     return output_wav
 
 
-# ─── Timestamp → SRT logic ────────────────────────────────────────────────────
+# ─── Timestamp → SRT helpers ─────────────────────────────────────────────────
 
-def _ms_to_srt_time(ms: float) -> str:
-    """Chuyển milliseconds → SRT timestamp (HH:MM:SS,mmm)."""
-    total_ms = int(ms * 1000) if ms < 1000 else int(ms)  # handle both s and ms
-    hours = total_ms // 3_600_000
-    minutes = (total_ms % 3_600_000) // 60_000
-    seconds = (total_ms % 60_000) // 1000
-    millis  = total_ms % 1000
-    return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
+def _ms_to_srt(ms: float) -> str:
+    total = int(ms)
+    h = total // 3_600_000
+    m = (total % 3_600_000) // 60_000
+    s = (total % 60_000) // 1000
+    ms_ = total % 1000
+    return f"{h:02}:{m:02}:{s:02},{ms_:03}"
 
 
-def _seconds_to_srt_time(seconds: float) -> str:
-    """Chuyển seconds (float) → SRT timestamp."""
-    total_ms = int(seconds * 1000)
-    hours  = total_ms // 3_600_000
-    minutes = (total_ms % 3_600_000) // 60_000
-    secs   = (total_ms % 60_000) // 1000
-    millis = total_ms % 1000
-    return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+def _sec_to_srt(sec: float) -> str:
+    return _ms_to_srt(sec * 1000)
 
 
 def _build_srt_from_tokens(
     timestamps: list[dict],
-    text: str,
-    max_chars_per_line: int = 42,
     silence_gap_s: float = 1.5,
 ) -> list[dict]:
     """
-    Gom token-level timestamps → SRT entries với 2 điều kiện ngắt độc lập:
-
-    Fun-ASR-Nano trả về timestamps dạng token (ký tự/từ):
-      [{"token": "开", "start_time": 0.42, "end_time": 0.48}, ...]
-    Thời gian đơn vị là giây (seconds).
-
-    Điều kiện ngắt entry:
-    1. **Khoảng nghỉ (silence gap)**: khoảng cách giữa end_time token trước
-       và start_time token tiếp theo > silence_gap_s giây → ngắt ngay,
-       dù dòng ngắn cũng được. Đây là điều kiện TIÊN QUYẾT.
-    2. **Giới hạn ký tự**: nếu thêm token mới vượt max_chars_per_line
-       → ngắt tại dấu câu gần nhất, hoặc ngắt ngay nếu không có dấu câu.
-       max_chars chỉ là trần, không phải mục tiêu mỗi dòng phải đủ.
+    FunASR Nano token timestamps → SRT entries.
+    Ngắt entry khi khoảng nghỉ >= silence_gap_s giây (điều kiện chính).
+    Đơn vị time: giây (float).
     """
     if not timestamps:
         return []
 
-    entries = []
-    srt_idx = 1
-    n = len(timestamps)
-    idx = 0
+    entries, srt_idx = [], 1
+    n, idx = len(timestamps), 0
 
     while idx < n:
-        group_tokens: list[dict] = []
-        group_text = ""
+        group: list[dict] = []
         group_start = timestamps[idx]["start_time"]
-        last_punct_pos = -1      # vị trí (trong group_tokens) của dấu câu gần nhất
 
         while idx < n:
             tok = timestamps[idx]
-            token_str = tok.get("token", "")
-
-            # ── Điều kiện 1: Khoảng nghỉ giữa token trước và token này ──────
-            if group_tokens:
-                prev_end   = group_tokens[-1]["end_time"]
-                curr_start = tok["start_time"]
-                gap = curr_start - prev_end
+            if group:
+                gap = tok["start_time"] - group[-1]["end_time"]
                 if gap >= silence_gap_s:
-                    # Dừng ở đây, token này sẽ bắt đầu entry tiếp theo
                     break
-
-            # ── Điều kiện 2: Vượt quá giới hạn ký tự ────────────────────────
-            if group_text and len(group_text) + len(token_str) > max_chars_per_line:
-                if last_punct_pos >= 0:
-                    # Cắt tại dấu câu cuối cùng trong group
-                    cut_at = last_punct_pos + 1
-                    # Trả lại tokens từ cut_at về idx để xử lý lần sau
-                    returned = len(group_tokens) - cut_at
-                    idx -= returned
-                    group_tokens = group_tokens[:cut_at]
-                    group_text = "".join(t.get("token", "") for t in group_tokens)
-                # Dù có hay không có dấu câu → dừng tại đây
-                break
-
-            # ── Thêm token vào group ──────────────────────────────────────────
-            group_tokens.append(tok)
-            group_text += token_str
-
-            # Ghi nhận vị trí dấu câu (dùng cho điều kiện 2)
-            if token_str in "。！？，、.!?,;；":
-                last_punct_pos = len(group_tokens) - 1
-
+            group.append(tok)
             idx += 1
 
-        # Bỏ qua group rỗng (idx stuck)
-        if not group_tokens:
+        if not group:
             idx += 1
             continue
 
-        text_line = group_text.strip()
-        if text_line:
+        text = "".join(t.get("token", "") for t in group).strip()
+        if text:
             entries.append({
                 "index": srt_idx,
                 "start": group_start,
-                "end": group_tokens[-1]["end_time"],
-                "text": text_line,
+                "end"  : group[-1]["end_time"],
+                "text" : text,
             })
             srt_idx += 1
 
     return entries
 
 
-def _build_srt_from_sentence_info(
-    sentence_info: list[dict],
-    max_chars_per_line: int = 42,
+def _build_srt_from_sentence_info(sentence_info: list[dict]) -> list[dict]:
+    """
+    sentence_info → SRT entries.
+    Dùng cho FunASR Nano (diarization), Qwen3, Paraformer.
+    Mỗi phần tử: {"text": ..., "start": ms, "end": ms, "spk": int (tuỳ chọn)}
+    Đơn vị time: milliseconds (int).
+    """
+    entries, srt_idx = [], 1
+    for sent in sentence_info:
+        text = (sent.get("text") or sent.get("sentence") or "").strip()
+        if not text:
+            continue
+        entries.append({
+            "index"   : srt_idx,
+            "start_ms": sent.get("start", 0),
+            "end_ms"  : sent.get("end", 0),
+            "text"    : text,
+            "use_ms"  : True,
+        })
+        srt_idx += 1
+    return entries
+
+
+def _build_srt_from_paraformer_timestamps(
+    text: str,
+    timestamps: list[list[int]],
 ) -> list[dict]:
     """
-    Fallback: dùng sentence_info nếu timestamps không có.
-    sentence_info: [{"text": "...", "start": 610, "end": 5530, "spk": 0}, ...]
-    Thời gian đơn vị là milliseconds.
+    Paraformer trả về timestamps dạng [[start_ms, end_ms], ...] per character.
+    Gom lại theo câu (dựa vào dấu câu cuối đoạn).
     """
-    entries = []
-    srt_idx = 1
+    if not timestamps or not text:
+        return []
 
-    for sent in sentence_info:
-        raw_text = sent.get("text") or sent.get("sentence") or ""
-        raw_text = raw_text.strip()
-        if not raw_text:
-            continue
+    chars = list(text)
+    ts    = timestamps
+    # Đảm bảo đồng độ dài
+    n = min(len(chars), len(ts))
+    if n == 0:
+        return []
 
-        start_ms = sent.get("start", 0)
-        end_ms   = sent.get("end", 0)
+    PUNCTS = set("。！？.!?\n")
+    entries, srt_idx = [], 1
+    buf_chars, buf_ts = [], []
 
-        # Chia dòng dài thành nhiều dòng SRT
-        if len(raw_text) <= max_chars_per_line:
-            entries.append({
-                "index": srt_idx,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "text": raw_text,
-                "use_ms": True,
-            })
-            srt_idx += 1
-        else:
-            # Wrap dài → nhiều dòng con, chia đều timestamp
-            chunks = _wrap_text(raw_text, max_chars_per_line)
-            total_chars = len(raw_text)
-            char_duration = (end_ms - start_ms) / max(total_chars, 1)
-            current_start = start_ms
-            char_pos = 0
-            for chunk in chunks:
-                chunk_end = current_start + int(len(chunk) * char_duration)
+    for i in range(n):
+        buf_chars.append(chars[i])
+        buf_ts.append(ts[i])
+        is_end = chars[i] in PUNCTS or i == n - 1
+        if is_end and buf_chars:
+            seg_text = "".join(buf_chars).strip()
+            if seg_text:
                 entries.append({
-                    "index": srt_idx,
-                    "start_ms": current_start,
-                    "end_ms": chunk_end,
-                    "text": chunk,
-                    "use_ms": True,
+                    "index"   : srt_idx,
+                    "start_ms": buf_ts[0][0],
+                    "end_ms"  : buf_ts[-1][1],
+                    "text"    : seg_text,
+                    "use_ms"  : True,
                 })
                 srt_idx += 1
-                current_start = chunk_end
-                char_pos += len(chunk)
+            buf_chars, buf_ts = [], []
 
     return entries
-
-
-def _wrap_text(text: str, max_chars: int) -> list[str]:
-    """Cắt text theo max_chars, ưu tiên cắt tại dấu câu."""
-    if len(text) <= max_chars:
-        return [text]
-
-    chunks = []
-    while text:
-        if len(text) <= max_chars:
-            chunks.append(text)
-            break
-        # Tìm dấu câu trong khoảng max_chars
-        cut = max_chars
-        for punct in "。！？，、.!?,;；":
-            pos = text.rfind(punct, 0, max_chars + 1)
-            if pos > 0:
-                cut = pos + 1
-                break
-        chunks.append(text[:cut])
-        text = text[cut:].strip()
-    return chunks
 
 
 def build_srt_content(entries: list[dict]) -> str:
-    """
-    Từ list entries → chuỗi SRT hoàn chỉnh.
-    Entry có thể dùng "start"/"end" (seconds) hoặc "start_ms"/"end_ms" (ms).
-    """
+    """List SRT entry dicts → chuỗi SRT hoàn chỉnh."""
     lines = []
-    for entry in entries:
-        idx = entry["index"]
-        text = entry["text"]
-
-        if entry.get("use_ms"):
-            start_srt = _ms_to_srt_time(entry["start_ms"])
-            end_srt   = _ms_to_srt_time(entry["end_ms"])
-        else:
-            start_srt = _seconds_to_srt_time(entry["start"])
-            end_srt   = _seconds_to_srt_time(entry["end"])
-
-        lines.append(f"{idx}\n{start_srt} --> {end_srt}\n{text}\n")
-
+    for e in entries:
+        start_srt = _ms_to_srt(e["start_ms"]) if e.get("use_ms") else _sec_to_srt(e["start"])
+        end_srt   = _ms_to_srt(e["end_ms"])   if e.get("use_ms") else _sec_to_srt(e["end"])
+        lines.append(f"{e['index']}\n{start_srt} --> {end_srt}\n{e['text']}\n")
     return "\n".join(lines)
 
 
-# ─── Main transcription function ─────────────────────────────────────────────
+# ─── Main transcription ───────────────────────────────────────────────────────
 
 def transcribe_audio(
     audio_path: str,
-    language: str = "中文",
-    max_chars_per_line: int = 42,
+    model_key: str = MODEL_FUNASR_NANO,
+    language: str = "zh",
     silence_gap_s: float = 1.5,
     hotwords: list[str] | None = None,
+    use_diarization: bool = False,
 ) -> list[dict]:
     """
-    Chạy Fun-ASR-Nano trên file WAV, trả về list SRT entries.
+    Chạy STT model trên file WAV, trả về list SRT entry dicts.
 
     Args:
-        audio_path: Đường dẫn file WAV (16kHz mono)
-        language: Ngôn ngữ nhận dạng, mặc định "中文"
-        max_chars_per_line: Trần ký tự mỗi dòng SRT (35–42 thông dụng)
-        silence_gap_s: Khoảng lặng (giây) giữa 2 token; vượt ngưỡng này thì ngắt entry dù dòng ngắn
-        hotwords: Danh sách từ khóa ưu tiên nhận dạng
+        audio_path      : Đường dẫn WAV (16kHz mono)
+        model_key       : "funasr-nano" | "qwen3-asr" | "paraformer"
+        language        : Mã ngôn ngữ (model-specific, ví dụ "zh", "Chinese", "auto")
+        silence_gap_s   : (FunASR Nano) khoảng lặng giữa token → ngắt dòng
+        hotwords        : (Paraformer) danh sách từ ưu tiên
+        use_diarization : Bật nhận diện nhiều người nói (cam++)
 
     Returns:
-        List of SRT entry dicts với keys: index, start, end, text
+        List of SRT entry dicts
     """
-    model = get_stt_model()
+    model = get_stt_model(model_key=model_key, use_diarization=use_diarization)
 
-    generate_kwargs = dict(
-        input=[audio_path],
-        cache={},
-        batch_size=1,
-        language=language,
-    )
-    if hotwords:
-        generate_kwargs["hotwords"] = hotwords
+    # ── Build generate kwargs theo từng model ─────────────────────────────────
+    if model_key == MODEL_PARAFORMER:
+        gen_kwargs: dict = {
+            "input"       : audio_path,
+            "batch_size_s": 300,
+        }
+        if hotwords:
+            gen_kwargs["hotword"] = " ".join(hotwords)
+    elif model_key == MODEL_QWEN3_ASR:
+        gen_kwargs = {
+            "input"     : audio_path,
+            "cache"     : {},
+            "batch_size": 1,
+        }
+        if language and language.lower() not in ("auto", ""):
+            gen_kwargs["language"] = language
+    else:  # funasr-nano
+        gen_kwargs = {
+            "input"     : [audio_path],
+            "cache"     : {},
+            "batch_size": 1,
+            "language"  : language,
+        }
+        if hotwords:
+            gen_kwargs["hotwords"] = hotwords
 
     logger.info(
-        "Running STT on: %s (lang=%s, max_chars=%d, silence_gap=%.1fs)",
-        audio_path, language, max_chars_per_line, silence_gap_s,
+        "STT | model=%s lang=%s diarization=%s audio=%s",
+        model_key, language, use_diarization, audio_path,
     )
-    res = model.generate(**generate_kwargs)
+
+    res = model.generate(**gen_kwargs)
 
     if not res or not res[0]:
-        raise RuntimeError("Fun-ASR-Nano không trả về kết quả nào.")
+        raise RuntimeError(f"Model {model_key} không trả về kết quả.")
 
-    result = res[0]
-    text = result.get("text", "")
-    timestamps: list[dict] = result.get("timestamps", [])
-    sentence_info: list[dict] = result.get("sentence_info", [])
+    result        = res[0]
+    text: str     = result.get("text", "")
+    timestamps    = result.get("timestamps", []) or result.get("timestamp", [])
+    sentence_info = result.get("sentence_info", [])
 
-    logger.info("STT completed. Text length=%d, tokens=%d, sentences=%d",
+    logger.info("STT done. text_len=%d, timestamps=%d, sentences=%d",
                 len(text), len(timestamps), len(sentence_info))
 
-    # Ưu tiên dùng token timestamps → SRT entries chi tiết hơn
-    if timestamps:
-        entries = _build_srt_from_tokens(
-            timestamps, text,
-            max_chars_per_line=max_chars_per_line,
-            silence_gap_s=silence_gap_s,
-        )
-    elif sentence_info:
-        entries = _build_srt_from_sentence_info(sentence_info, max_chars_per_line)
-    else:
-        # Fallback: không có timestamp → 1 entry duy nhất
-        logger.warning("Không có timestamp, tạo 1 SRT entry duy nhất.")
-        entries = [{"index": 1, "start": 0.0, "end": 30.0, "text": text}]
+    # ── Gắn nhãn người nói nếu diarization ───────────────────────────────────
+    if use_diarization and sentence_info:
+        for sent in sentence_info:
+            spk = sent.get("spk", "?")
+            raw = sent.get("text") or sent.get("sentence") or ""
+            sent["text"] = f"[Người nói {spk}]: {raw}"
 
-    return entries
+    # ── Chọn builder phù hợp ─────────────────────────────────────────────────
+    if use_diarization and sentence_info:
+        return _build_srt_from_sentence_info(sentence_info)
+
+    if model_key == MODEL_PARAFORMER:
+        # Paraformer + punc_model + vad_model → luôn có sentence_info
+        # Ref: for sent in res[0]["sentence_info"]: sent['spk'], sent['start'], sent['end'], sent['text']
+        if sentence_info:
+            return _build_srt_from_sentence_info(sentence_info)
+        # Fallback hiếm gặp: chỉ có character timestamps (khi không dùng punc+vad)
+        if timestamps and isinstance(timestamps[0], (list, tuple)):
+            return _build_srt_from_paraformer_timestamps(text, timestamps)
+        return [{"index": 1, "start_ms": 0, "end_ms": 30000, "text": text, "use_ms": True}]
+
+    if model_key == MODEL_QWEN3_ASR:
+        # Qwen3: sentence_info có start/end ms sau khi dùng vad_model
+        if sentence_info:
+            return _build_srt_from_sentence_info(sentence_info)
+        # Fallback nếu không có VAD segment
+        return [{"index": 1, "start_ms": 0, "end_ms": 30000, "text": text, "use_ms": True}]
+
+    # FunASR Nano (default)
+    if timestamps and isinstance(timestamps[0], dict):
+        return _build_srt_from_tokens(timestamps, silence_gap_s=silence_gap_s)
+    elif sentence_info:
+        return _build_srt_from_sentence_info(sentence_info)
+    else:
+        logger.warning("Không có timestamp, tạo 1 SRT entry duy nhất.")
+        return [{"index": 1, "start": 0.0, "end": 30.0, "text": text}]
 
 
 def run_stt_and_save_srt(
     video_path: str,
     output_srt_path: str = "",
-    language: str = "中文",
-    max_chars_per_line: int = 42,
+    model_key: str = MODEL_FUNASR_NANO,
+    language: str = "zh",
+    silence_gap_s: float = 1.5,
     hotwords: list[str] | None = None,
+    use_diarization: bool = False,
 ) -> str:
     """
     Pipeline hoàn chỉnh: video → extract audio → STT → save SRT.
@@ -385,25 +443,22 @@ def run_stt_and_save_srt(
     """
     video_path_obj = Path(video_path)
 
-    # Tạo đường dẫn output SRT nếu không chỉ định
     if not output_srt_path:
-        output_srt_path = str(video_path_obj.with_suffix(".srt"))
+        output_srt_path = str(video_path_obj.with_suffix("")) + "_stt.srt"
 
-    # Tạo file WAV tạm trong TEMP_DIR
     wav_path = str(TEMP_DIR / f"stt_{video_path_obj.stem}.wav")
 
-    # Bước 1: Trích xuất audio
     extract_audio(video_path, wav_path)
 
-    # Bước 2: Nhận dạng
     entries = transcribe_audio(
         audio_path=wav_path,
+        model_key=model_key,
         language=language,
-        max_chars_per_line=max_chars_per_line,
+        silence_gap_s=silence_gap_s,
         hotwords=hotwords,
+        use_diarization=use_diarization,
     )
 
-    # Bước 3: Build và lưu SRT
     srt_content = build_srt_content(entries)
     Path(output_srt_path).write_text(srt_content, encoding="utf-8")
     logger.info("SRT saved → %s (%d entries)", output_srt_path, len(entries))
