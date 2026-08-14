@@ -13,7 +13,7 @@ _model = None
 DEFAULT_OMNIVOICE_MODEL = os.getenv("OMNIVOICE_MODEL", "k2-fsa/OmniVoice")
 DEFAULT_OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16").lower()
 DEFAULT_TTS_LANGUAGE = os.getenv("OMNIVOICE_LANGUAGE", "Vietnamese")
-DEFAULT_TTS_POSTPROCESS_OUTPUT = os.getenv("OMNIVOICE_POSTPROCESS_OUTPUT", "false").lower() in {"1", "true", "yes", "on"}
+DEFAULT_TTS_POSTPROCESS_OUTPUT = os.getenv("OMNIVOICE_POSTPROCESS_OUTPUT", "True").lower() in {"1", "true", "yes", "on"}
 
 
 def _import_omnivoice_class():

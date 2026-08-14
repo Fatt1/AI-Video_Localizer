@@ -95,6 +95,35 @@ async def test_dubbing_fails_with_detailed_error_when_all_lines_tts_fail(tmp_pat
 
     task.fail.assert_awaited_once()
     failure_message = task.fail.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_dubbing_fails_with_detailed_error_when_all_lines_tts_fail(tmp_path: Path):
+    srt_path = tmp_path / "input.srt"
+    srt_path.write_text("dummy", encoding="utf-8")
+
+    task = _FakeTask("task-detail")
+    subs = [
+        _FakeSub("Xin chao", _FakeSubRipTime(0), _FakeSubRipTime(1000)),
+        _FakeSub("Ban khoe khong", _FakeSubRipTime(1500), _FakeSubRipTime(3000)),
+    ]
+
+    with patch("services.dubbing_service.pysrt.open", return_value=subs), patch(
+        "services.dubbing_service.get_clone_by_id",
+        return_value={"id": "voice-a", "ref_text": "sample transcript"},
+    ), patch("services.dubbing_service.find_draft_folder", return_value=tmp_path), patch(
+        "services.dubbing_service.synthesize_line",
+        side_effect=RuntimeError("model load failed"),
+    ), patch("services.dubbing_service.unload_tts_model"):
+        await run_dubbing_pipeline(
+            srt_path=str(srt_path),
+            voice_id="voice-a",
+            capcut_project_name="demo",
+            task=task,
+        )
+
+    task.fail.assert_awaited_once()
+    failure_message = task.fail.await_args.args[0]
     assert "Lỗi mẫu" in failure_message
     assert "model load failed" in failure_message
     assert "2/2 dòng lỗi" in failure_message
@@ -127,3 +156,27 @@ async def test_dubbing_fails_early_when_voice_clone_is_missing(tmp_path: Path):
     assert "missing-voice" in failure_message
     assert "voice-a" in failure_message
     task.complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dubbing_integration_quyt_nho_voice(tmp_path: Path):
+    """
+    Integration test to actually generate voice using quyt-nho-voice.WAV.
+    This tests the TTS model with real text: "Xin chào các bạn hôm này mình sẽ review"
+    """
+    from services.tts_service import synthesize_line
+    
+    text = "Xin chào các bạn hôm này mình sẽ review"
+    voice_id = "quyt-nho-voice"
+    output_path = tmp_path / "output_test_quyt_nho.wav"
+    
+    # Synthesize the line
+    result_path = await synthesize_line(
+        text=text,
+        voice_id=voice_id,
+        output_path=str(output_path)
+    )
+    
+    # Verify file is created and not empty
+    assert Path(result_path).exists()
+    assert Path(result_path).stat().st_size > 44  # basic wav header is 44 bytes
