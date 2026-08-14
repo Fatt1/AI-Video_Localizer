@@ -132,6 +132,30 @@ def _build_atempo_filter_chain(speed: float) -> str:
 	return ",".join(parts)
 
 
+def _trim_silence_from_wav(wav_path: Path, top_db: float = 30) -> None:
+	"""Trim leading/trailing silence from a WAV file using librosa.
+
+	This removes the silent padding that OmniVoice sometimes generates at
+	the start and end of synthesized clips, resulting in tighter timing
+	when aligning audio to subtitle slots.
+	"""
+	try:
+		import librosa
+		import soundfile as sf
+
+		audio, sr = librosa.load(str(wav_path), sr=None)
+		trimmed_audio, _ = librosa.effects.trim(audio, top_db=top_db)
+
+		# Only overwrite if we actually trimmed something meaningful (>1ms)
+		original_len = len(audio)
+		trimmed_len = len(trimmed_audio)
+		if trimmed_len < original_len and trimmed_len > 0:
+			sf.write(str(wav_path), trimmed_audio, sr, format="WAV", subtype="PCM_16")
+	except Exception as exc:
+		# Non-fatal: log and continue without trimming
+		print(f"[TTS] Warning: trim silence failed for {wav_path.name}: {exc}")
+
+
 def _apply_speed_to_wav(wav_path: Path, speed: float) -> None:
 	"""Apply speech rate while preserving pitch using ffmpeg atempo."""
 	speed = _validate_atempo_rate(speed)
@@ -219,6 +243,7 @@ async def synthesize_line(
 	output.parent.mkdir(parents=True, exist_ok=True)
 
 	_save_audio(output, audio, sample_rate)
+	_trim_silence_from_wav(output)
 	_apply_speed_to_wav(output, speech_rate)
 	return str(output)
 

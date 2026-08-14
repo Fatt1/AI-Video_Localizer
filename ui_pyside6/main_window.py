@@ -309,6 +309,7 @@ class MainWindow(QMainWindow):
         self._editor_panel.normalize_before_requested.connect(self._normalize_before)
         self._editor_panel.normalize_after_requested.connect(self._normalize_after)
         self._editor_panel.filter_dup_requested.connect(self._filter_duplicates)
+        self._editor_panel.single_tts_requested.connect(self._run_single_tts)
 
     # ══════════════════════════════════════════════════════════════════════════
     # FILE OPERATIONS
@@ -604,6 +605,21 @@ class MainWindow(QMainWindow):
         )
         self._start_worker(worker, "Dubbing")
 
+    def _run_single_tts(self, text: str, voice_id: str, rate: float, output_path: str):
+        """Standalone single TTS synthesis -> saved to output_path, then playable."""
+        from workers.single_tts_worker import SingleTtsWorker
+        worker = SingleTtsWorker(
+            text=text,
+            voice_id=voice_id,
+            output_path=output_path,
+            speech_rate=rate,
+        )
+
+        # Feed result back to the TTS panel
+        worker.task_finished.connect(self._editor_panel.on_single_tts_finished)
+
+        self._start_worker(worker, "Single TTS")
+
     def _normalize_before(self):
         """Chuẩn hóa trước khi dịch: export plain subtitle."""
         if not self._srt_path and not self._entries:
@@ -744,6 +760,13 @@ class MainWindow(QMainWindow):
         worker.task_finished.connect(lambda ok, msg: self._on_worker_finished(ok, msg, task_name))
         worker.error_occurred.connect(lambda msg: self._on_worker_error(msg, task_name))
 
+        # Clean up the thread object only after it has fully stopped.
+        # deleteLater() schedules Qt to free the object on the next event-loop
+        # iteration, which is always *after* the thread has exited — this
+        # prevents the "QThread: Destroyed while thread is still running" crash.
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_worker_thread_done)
+
         worker.start()
 
     def _cancel_task(self):
@@ -756,6 +779,10 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(percent)
         self._set_status(message)
 
+    def _on_worker_thread_done(self):
+        """Called when the QThread has fully finished. Safe to release the reference."""
+        self._active_worker = None
+
     def _on_worker_finished(self, success: bool, message: str, task_name: str):
         self._set_busy(False)
         if success:
@@ -763,12 +790,14 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"❌ {task_name} thất bại: {message[:80]}")
             QMessageBox.warning(self, f"{task_name} Lỗi", message)
-        self._active_worker = None
+        # NOTE: do NOT set _active_worker = None here.
+        # The thread may still be winding down. Cleanup is done in
+        # _on_worker_thread_done which fires on QThread.finished.
 
     def _on_worker_error(self, message: str, task_name: str):
         self._set_busy(False)
         self._warning_panel.append_log(f"[Error] {task_name}: {message[:200]}")
-        self._active_worker = None
+        # NOTE: same as above — let _on_worker_thread_done handle the cleanup.
 
     # ══════════════════════════════════════════════════════════════════════════
     # REFRESH HELPERS

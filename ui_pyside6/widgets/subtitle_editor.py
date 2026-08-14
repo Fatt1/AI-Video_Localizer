@@ -61,7 +61,9 @@ class SubtitleEditorPanel(QWidget):
     normalize_before_requested = Signal()
     normalize_after_requested  = Signal()
     filter_dup_requested       = Signal()
-    single_tts_requested       = Signal()    # placeholder
+
+    # Single TTS
+    single_tts_requested = Signal(str, str, float, str)  # (text, voice_id, rate, output_path)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,7 +84,7 @@ class SubtitleEditorPanel(QWidget):
         tab_lay.setSpacing(0)
 
         self._tab_btns: list[QPushButton] = []
-        tabs = ["✏ Edit", "🔍 OCR", "🎙 STT", "🎵 Dub", "🛠 Tools"]
+        tabs = ["✏ Edit", "🔍 OCR", "🎙 STT", "🎵 Dub", "🔊 TTS", "🛠 Tools"]
         for i, name in enumerate(tabs):
             btn = QPushButton(name)
             btn.setObjectName("tab_btn")
@@ -96,11 +98,12 @@ class SubtitleEditorPanel(QWidget):
 
         # ── Stacked pages ──
         self._stack = QStackedWidget()
-        self._stack.addWidget(self._build_edit_page())
-        self._stack.addWidget(self._build_ocr_page())
-        self._stack.addWidget(self._build_stt_page())
-        self._stack.addWidget(self._build_dubbing_page())
-        self._stack.addWidget(self._build_tools_page())
+        self._stack.addWidget(self._build_edit_page())      # 0
+        self._stack.addWidget(self._build_ocr_page())       # 1
+        self._stack.addWidget(self._build_stt_page())       # 2
+        self._stack.addWidget(self._build_dubbing_page())   # 3
+        self._stack.addWidget(self._build_single_tts_page()) # 4
+        self._stack.addWidget(self._build_tools_page())     # 5
         root.addWidget(self._stack, stretch=1)
 
     def _switch_tab(self, idx: int):
@@ -386,7 +389,97 @@ class SubtitleEditorPanel(QWidget):
 
         return self._scrollable(content)
 
-    # ── Page 4: SRT Tools ─────────────────────────────────────────────────────
+    # ── Page 4: Single TTS ────────────────────────────────────────────────────
+    def _build_single_tts_page(self) -> QWidget:
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        # ── Text input ──
+        grp_text = QGroupBox("Van ban can doc")
+        t_lay = QVBoxLayout(grp_text)
+        self._tts_text_input = QTextEdit()
+        self._tts_text_input.setPlaceholderText("Nhap noi dung can doc vao day...")
+        self._tts_text_input.setMinimumHeight(100)
+        self._tts_text_input.setMaximumHeight(200)
+        t_lay.addWidget(self._tts_text_input)
+        lay.addWidget(grp_text)
+
+        # ── Voice & Speed ──
+        grp_settings = QGroupBox("Cai dat giong noi")
+        s_lay = QFormLayout(grp_settings)
+        s_lay.setSpacing(8)
+
+        # Voice selector (shares data from set_voices)
+        tts_voice_row = QWidget()
+        tvr_lay = QHBoxLayout(tts_voice_row)
+        tvr_lay.setContentsMargins(0, 0, 0, 0)
+        self._tts_voice_combo = QComboBox()
+        self._tts_voice_combo.setPlaceholderText("Chon giong noi...")
+        tvr_lay.addWidget(self._tts_voice_combo, stretch=1)
+        btn_tts_refresh = QPushButton("↻")
+        btn_tts_refresh.setFixedSize(30, 28)
+        btn_tts_refresh.setToolTip("Reload danh sach voice clones")
+        btn_tts_refresh.clicked.connect(self.voices_refresh.emit)
+        tvr_lay.addWidget(btn_tts_refresh)
+        s_lay.addRow("Giong:", tts_voice_row)
+
+        # Speed slider
+        tts_rate_row = QWidget()
+        trr_lay = QHBoxLayout(tts_rate_row)
+        trr_lay.setContentsMargins(0, 0, 0, 0)
+        self._tts_rate_slider = QSlider(Qt.Orientation.Horizontal)
+        self._tts_rate_slider.setRange(50, 200)
+        self._tts_rate_slider.setValue(100)
+        self._tts_rate_label = QLabel("1.00x")
+        self._tts_rate_label.setMinimumWidth(46)
+        self._tts_rate_slider.valueChanged.connect(
+            lambda v: self._tts_rate_label.setText(f"{v/100:.2f}x")
+        )
+        trr_lay.addWidget(self._tts_rate_slider, stretch=1)
+        trr_lay.addWidget(self._tts_rate_label)
+        s_lay.addRow("Toc do:", tts_rate_row)
+
+        lay.addWidget(grp_settings)
+
+        # ── Buttons ──
+        self._btn_run_tts = QPushButton("🎙  Tao giong noi")
+        self._btn_run_tts.setObjectName("btn_run_single_tts")
+        self._btn_run_tts.setStyleSheet(
+            "QPushButton { background:#1a3a5c; border:1px solid #2a6ca8; color:#7ec8e3;"
+            " font-weight:700; border-radius:6px; padding:8px; }"
+            "QPushButton:hover { background:#2a5c8a; color:#ffffff; }"
+            "QPushButton:disabled { background:#1a1a2e; color:#444460; border-color:#2a2a3d; }"
+        )
+        self._btn_run_tts.clicked.connect(self._on_run_single_tts)
+        lay.addWidget(self._btn_run_tts)
+
+        # Play button (hidden until audio is ready)
+        self._btn_play_tts = QPushButton("▶  Nghe thu")
+        self._btn_play_tts.setObjectName("btn_play_tts")
+        self._btn_play_tts.setStyleSheet(
+            "QPushButton { background:#1a4a2a; border:1px solid #2a8a4a; color:#7ee3a0;"
+            " font-weight:700; border-radius:6px; padding:8px; }"
+            "QPushButton:hover { background:#2a7a3a; color:#ffffff; }"
+            "QPushButton:disabled { background:#1a1a2e; color:#444460; border-color:#2a2a3d; }"
+        )
+        self._btn_play_tts.setEnabled(False)
+        self._btn_play_tts.clicked.connect(self._on_play_tts_audio)
+        lay.addWidget(self._btn_play_tts)
+
+        # Status label
+        self._tts_status_label = QLabel("")
+        self._tts_status_label.setStyleSheet("color:#606080; font-size:11px; padding:4px;")
+        self._tts_status_label.setWordWrap(True)
+        lay.addWidget(self._tts_status_label)
+
+        self._tts_output_path: str = ""
+
+        lay.addStretch()
+        return self._scrollable(content)
+
+    # ── Page 5: SRT Tools ─────────────────────────────────────────────────────
     def _build_tools_page(self) -> QWidget:
         content = QWidget()
         lay = QVBoxLayout(content)
@@ -422,11 +515,11 @@ class SubtitleEditorPanel(QWidget):
         ))
         lay.addWidget(grp_filter)
 
-        grp_tts = QGroupBox("Lồng tiếng")
+        grp_tts = QGroupBox("Long tieng")
         t_lay = QVBoxLayout(grp_tts)
-        btn_single = QPushButton("🔊  Lồng tiếng single  (coming soon)")
-        btn_single.setEnabled(False)
-        btn_single.setToolTip("Tính năng đang phát triển")
+        btn_single = QPushButton("🔊  Long tieng single -> Dung tab TTS")
+        btn_single.setEnabled(True)
+        btn_single.clicked.connect(lambda: self._switch_tab(4))
         t_lay.addWidget(btn_single)
         lay.addWidget(grp_tts)
 
@@ -454,16 +547,21 @@ class SubtitleEditorPanel(QWidget):
         self._ocr_region_label.setText(text)
 
     def set_voices(self, voices: list[dict]):
-        """Populate voice combo box."""
+        """Populate voice combo boxes (Dubbing tab + TTS tab)."""
         self._voice_combo.clear()
+        self._tts_voice_combo.clear()
         for v in voices:
-            self._voice_combo.addItem(v.get("name", v["id"]), userData=v["id"])
+            label = v.get("name", v["id"])
+            uid   = v["id"]
+            self._voice_combo.addItem(label, userData=uid)
+            self._tts_voice_combo.addItem(label, userData=uid)
 
     def set_busy(self, busy: bool):
         """Disable run buttons when a task is running."""
         self._btn_run_ocr.setEnabled(not busy)
         self._btn_run_stt.setEnabled(not busy)
         self._btn_run_dubbing.setEnabled(not busy)
+        self._btn_run_tts.setEnabled(not busy)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
     def _on_apply(self):
@@ -500,3 +598,49 @@ class SubtitleEditorPanel(QWidget):
         project  = self._capcut_project.text().strip()
         rate     = self._speech_rate_slider.value() / 100.0
         self.run_dubbing_requested.emit(voice_id or "", project, rate)
+
+    def _on_run_single_tts(self):
+        text     = self._tts_text_input.toPlainText().strip()
+        voice_id = self._tts_voice_combo.currentData()
+        if not voice_id:
+            voice_id = self._tts_voice_combo.currentText()
+        rate = self._tts_rate_slider.value() / 100.0
+
+        if not text:
+            self._tts_status_label.setText("⚠ Hay nhap van ban truoc.")
+            return
+        if not voice_id:
+            self._tts_status_label.setText("⚠ Hay chon giong noi.")
+            return
+
+        # Build a stable output path in temp dir
+        import hashlib, time
+        from pathlib import Path
+        slug = hashlib.md5(f"{voice_id}{text[:30]}{time.time()}".encode()).hexdigest()[:8]
+        out_dir = Path(__file__).parent.parent.parent / "temp" / "standalone_tts"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(out_dir / f"tts_{slug}.wav")
+
+        self._tts_output_path = ""
+        self._btn_play_tts.setEnabled(False)
+        self._tts_status_label.setText("Dang tao giong noi...")
+        self.single_tts_requested.emit(text, voice_id, rate, output_path)
+
+    def on_single_tts_finished(self, success: bool, result: str):
+        """Called by MainWindow when TTS job completes."""
+        if success:
+            self._tts_output_path = result
+            self._btn_play_tts.setEnabled(True)
+            self._tts_status_label.setText(f"Da tao xong: {result}")
+        else:
+            self._tts_status_label.setText(f"Loi: {result[:120]}")
+
+    def _on_play_tts_audio(self):
+        if not self._tts_output_path:
+            return
+        from pathlib import Path
+        if not Path(self._tts_output_path).exists():
+            self._tts_status_label.setText("File audio khong ton tai.")
+            return
+        import os
+        os.startfile(self._tts_output_path)
