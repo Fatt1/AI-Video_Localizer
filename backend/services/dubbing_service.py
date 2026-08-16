@@ -14,9 +14,13 @@ from services.capcut_service import (
 from services.tts_service import (
     apply_speed_to_existing_audio,
     get_clone_by_id,
+    get_vieneu_clone_by_id,
     list_voice_clones,
+    list_vieneu_voice_clones,
     synthesize_line,
+    synthesize_line_vieneu,
     unload_tts_model,
+    unload_vieneu_model,
 )
 
 
@@ -132,8 +136,13 @@ async def run_dubbing_pipeline(
     capcut_project_name: str,
     task: Task,
     speech_rate: float = 1.0,
+    tts_engine: str = "omnivoice",
 ) -> None:
-    """Pipeline: SRT -> OmniVoice WAV clips -> CapCut draft injection."""
+    """Pipeline: SRT -> TTS WAV clips -> CapCut draft injection.
+
+    Args:
+        tts_engine: 'omnivoice' (default) or 'vieneu' to select TTS engine.
+    """
     srt_file = Path(srt_path)
     if not srt_file.exists():
         await task.fail(f"Không tìm thấy file SRT: {srt_path}")
@@ -153,11 +162,20 @@ async def run_dubbing_pipeline(
         await task.fail("File SRT không có nội dung text hợp lệ để tạo audio")
         return
 
-    clone = get_clone_by_id(voice_id)
+    # Resolve voice clone based on engine
+    if tts_engine == "vieneu":
+        clone = get_vieneu_clone_by_id(voice_id)
+        voices_fn = list_vieneu_voice_clones
+        voice_dir_name = "voice_clones_vieneu"
+    else:
+        clone = get_clone_by_id(voice_id)
+        voices_fn = list_voice_clones
+        voice_dir_name = "voice_clones"
+
     if clone is None:
-        voices = list_voice_clones()
+        voices = voices_fn()
         available_ids = ", ".join(v["id"] for v in voices[:5])
-        voice_hint = available_ids if available_ids else "không có voice clone nào trong thư mục voice_clones"
+        voice_hint = available_ids if available_ids else f"không có voice clone nào trong thư mục {voice_dir_name}"
         await task.fail(
             f"Voice clone '{voice_id}' không tồn tại. Voice hiện có: {voice_hint}"
         )
@@ -167,12 +185,13 @@ async def run_dubbing_pipeline(
         await task.fail(
             (
                 f"Voice clone '{voice_id}' chưa có transcript .txt hoặc nội dung transcript đang rỗng. "
-                "Hãy thêm file .txt cùng tên với file .wav trong thư mục voice_clones"
+                f"Hãy thêm file .txt cùng tên với file .wav trong thư mục {voice_dir_name}"
             )
         )
         return
 
-    await task.update(11, f"Đang dùng voice clone: {clone['id']}")
+    engine_label = "VieNeu-TTS v2" if tts_engine == "vieneu" else "OmniVoice"
+    await task.update(11, f"Đang dùng voice clone: {clone['id']} (engine: {engine_label})")
 
     if task.is_cancelled():
         return
@@ -216,12 +235,20 @@ async def run_dubbing_pipeline(
             audio_path = tts_output_dir / audio_filename
 
             try:
-                await synthesize_line(
-                    text=text,
-                    voice_id=voice_id,
-                    output_path=str(audio_path),
-                    speech_rate=speech_rate,
-                )
+                if tts_engine == "vieneu":
+                    await synthesize_line_vieneu(
+                        text=text,
+                        voice_id=voice_id,
+                        output_path=str(audio_path),
+                        speech_rate=speech_rate,
+                    )
+                else:
+                    await synthesize_line(
+                        text=text,
+                        voice_id=voice_id,
+                        output_path=str(audio_path),
+                        speech_rate=speech_rate,
+                    )
             except Exception as exc:
                 reason = _normalize_error_message(exc)
                 line_errors.append((i, reason))
@@ -339,4 +366,7 @@ async def run_dubbing_pipeline(
             }
         )
     finally:
-        unload_tts_model()
+        if tts_engine == "vieneu":
+            unload_vieneu_model()
+        else:
+            unload_tts_model()

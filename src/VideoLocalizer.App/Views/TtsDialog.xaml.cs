@@ -49,6 +49,9 @@ public partial class TtsDialog : Wpf.Ui.Controls.FluentWindow
         _audioItems.CollectionChanged += (_, _) =>
             TxtAudioCount.Text = $" ({_audioItems.Count})";
 
+        // Set default engine
+        CboEngine.SelectedIndex = 0;
+
         // Focus text input khi mở
         Loaded += async (_, _) =>
         {
@@ -70,8 +73,9 @@ public partial class TtsDialog : Wpf.Ui.Controls.FluentWindow
     {
         try
         {
-            SetStatus("Đang tải danh sách giọng đọc...", true);
-            var voices = await _api.GetVoiceClonesAsync();
+            string engine = (CboEngine?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "omnivoice";
+            SetStatus($"Đang tải danh sách giọng đọc ({engine})...", true);
+            var voices = await _api.GetVoiceClonesAsync(engine);
 
             CboVoice.ItemsSource   = voices;
             CboVoice.DisplayMemberPath = "Name";
@@ -93,6 +97,12 @@ public partial class TtsDialog : Wpf.Ui.Controls.FluentWindow
 
     private async void BtnRefreshVoices_Click(object sender, RoutedEventArgs e)
         => await LoadVoicesAsync();
+
+    private async void CboEngine_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsLoaded)
+            await LoadVoicesAsync();
+    }
 
     // ─────────────────────────────────────────────────────────────
     // Speed slider
@@ -153,10 +163,12 @@ public partial class TtsDialog : Wpf.Ui.Controls.FluentWindow
 
         try
         {
+            string engine = (CboEngine.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "omnivoice";
             var result = await _api.SynthesizeTextAsync(
                 text:        text,
                 voiceId:     voice.Id,
-                speechRate:  speechRate);
+                speechRate:  speechRate,
+                engine:      engine);
 
             if (result == null)
             {

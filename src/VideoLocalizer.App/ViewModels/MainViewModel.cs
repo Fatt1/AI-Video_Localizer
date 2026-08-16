@@ -129,6 +129,17 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Danh sách voice clone lấy từ backend.</summary>
     public ObservableCollection<VoiceClone> VoiceClones { get; } = new();
 
+    /// <summary>TTS Engine hiện tại đang chọn.</summary>
+    [ObservableProperty]
+    private string _selectedTtsEngine = "omnivoice";
+
+    partial void OnSelectedTtsEngineChanged(string value)
+    {
+        _ = RefreshVoices();
+    }
+
+    public ObservableCollection<string> TtsEngines { get; } = new() { "omnivoice", "vieneu" };
+
     /// <summary>Voice clone đang chọn cho TTS.</summary>
     [ObservableProperty]
     private VoiceClone? _selectedVoice;
@@ -666,7 +677,7 @@ public partial class MainViewModel : ObservableObject
     {
         try
         {
-            var voices = await Api.GetVoiceClonesAsync();
+            var voices = await Api.GetVoiceClonesAsync(SelectedTtsEngine);
             VoiceClones.Clear();
 
             foreach (var voice in voices)
@@ -675,7 +686,7 @@ public partial class MainViewModel : ObservableObject
             if (SelectedVoice == null && VoiceClones.Count > 0)
                 SelectedVoice = VoiceClones[0];
 
-            StatusMessage = $"Tìm thấy {voices.Count} voice clones";
+            StatusMessage = $"Tìm thấy {voices.Count} voice clones (Engine: {SelectedTtsEngine})";
         }
         catch (Exception ex)
         {
@@ -760,7 +771,8 @@ public partial class MainViewModel : ObservableObject
             srtPath: CurrentSrtPath,
             voiceId: SelectedVoice.Id,
             capcutProjectName: CapcutProjectName,
-            speechRate: SpeechRate);
+            speechRate: SpeechRate,
+            ttsEngine: SelectedTtsEngine);
 
         if (task == null)
         {

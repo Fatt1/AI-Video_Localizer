@@ -56,11 +56,19 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <ComboBox Name="CboVoice"
-                                  Grid.Column="0"
-                                  DisplayMemberPath="Name"
-                                  SelectedValuePath="Id"
-                                  ToolTip="Chọn voice clone để tổng hợp giọng nói"/>
+                        <StackPanel Grid.Column="0">
+                            <ComboBox Name="CboEngine"
+                                      ToolTip="Chọn TTS Engine"
+                                      Margin="0,0,0,4"
+                                      SelectionChanged="CboEngine_SelectionChanged">
+                                <ComboBoxItem Content="omnivoice"/>
+                                <ComboBoxItem Content="vieneu"/>
+                            </ComboBox>
+                            <ComboBox Name="CboVoice"
+                                      DisplayMemberPath="Name"
+                                      SelectedValuePath="Id"
+                                      ToolTip="Chọn voice clone để tổng hợp giọng nói"/>
+                        </StackPanel>
                         <ui:Button Grid.Column="1"
                                    Name="BtnRefreshVoices"
                                    Icon="{ui:SymbolIcon ArrowClockwise24}"

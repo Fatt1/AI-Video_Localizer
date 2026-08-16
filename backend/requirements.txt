@@ -22,3 +22,5 @@ torchcodec
 funasr>=1.1.0
 modelscope>=1.9.0
 soundfile>=0.12.1
+transformers==4.57.6
+vieneu

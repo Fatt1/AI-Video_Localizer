@@ -22,6 +22,10 @@ TEMP_DIR.mkdir(exist_ok=True)
 VOICE_CLONES_DIR = BASE_DIR / "voice_clones"
 VOICE_CLONES_DIR.mkdir(exist_ok=True)
 
+# Thư mục chứa voice clone cho VieNeu-TTS v2 (wav + txt cùng tên)
+VOICE_CLONES_VIENEU_DIR = BASE_DIR / "voice_clones_vieneu"
+VOICE_CLONES_VIENEU_DIR.mkdir(exist_ok=True)
+
 # ── FFmpeg path ──
 # Ưu tiên: env var → shutil.which → các đường dẫn phổ biến Windows
 def _find_ffmpeg() -> str:

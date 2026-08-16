@@ -18,6 +18,9 @@ public class VoiceClone
 
     [JsonPropertyName("has_transcript")]
     public bool HasTranscript { get; set; }
+
+    [JsonPropertyName("engine")]
+    public string Engine { get; set; } = "omnivoice";
 }
 
 public class VoicesResponse

@@ -1,19 +1,57 @@
 from __future__ import annotations
 
+import logging
 import math
 import os
 import subprocess
 from pathlib import Path
 
-from core.config import FFMPEG_PATH, VOICE_CLONES_DIR
+import numpy as np
 
+from core.config import (
+	FFMPEG_PATH,
+	VOICE_CLONES_DIR,
+	VOICE_CLONES_VIENEU_DIR,
+)
 
-_model = None
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════
+#  Engine management — mutual exclusion (only one loaded at a time)
+# ═══════════════════════════════════════════════════════════════
+
+_omni_model = None
+_vieneu_model = None
+_active_engine: str | None = None  # "omnivoice" | "vieneu" | None
 
 DEFAULT_OMNIVOICE_MODEL = os.getenv("OMNIVOICE_MODEL", "k2-fsa/OmniVoice")
 DEFAULT_OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16").lower()
 DEFAULT_TTS_LANGUAGE = os.getenv("OMNIVOICE_LANGUAGE", "Vietnamese")
-DEFAULT_TTS_POSTPROCESS_OUTPUT = os.getenv("OMNIVOICE_POSTPROCESS_OUTPUT", "True").lower() in {"1", "true", "yes", "on"}
+DEFAULT_TTS_POSTPROCESS_OUTPUT = os.getenv(
+	"OMNIVOICE_POSTPROCESS_OUTPUT", "False"
+).lower() in {"1", "true", "yes", "on"}
+
+# VieNeu-TTS v2 config
+DEFAULT_VIENEU_BACKBONE = os.getenv(
+	"VIENEU_BACKBONE", "pnnbao-ump/VieNeu-TTS-v2"
+)
+DEFAULT_VIENEU_CODEC = os.getenv(
+	"VIENEU_CODEC", "neuphonic/distill-neucodec"
+)
+
+
+def _cleanup_gpu() -> None:
+	"""Clear CUDA cache if available."""
+	try:
+		import torch
+
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
+	except Exception:
+		pass
+
+
+# ── OmniVoice engine ──────────────────────────────────────────
 
 
 def _import_omnivoice_class():
@@ -28,49 +66,126 @@ def _import_omnivoice_class():
 
 
 def get_tts_model():
-	"""Lazy-load OmniVoice model to avoid occupying VRAM until needed."""
-	global _model
-	if _model is None:
+	"""Lazy-load OmniVoice model. Unloads VieNeu first if loaded."""
+	global _omni_model, _active_engine
+	if _omni_model is None:
+		# Unload VieNeu if it's currently loaded (mutual exclusion)
+		if _active_engine == "vieneu":
+			unload_vieneu_model()
+
 		try:
 			import torch
 
 			OmniVoice = _import_omnivoice_class()
 			device_map = "cuda" if torch.cuda.is_available() else "cpu"
-			dtype = torch.float16 if DEFAULT_OMNIVOICE_DTYPE == "float16" else torch.float32
+			dtype = (
+				torch.float16
+				if DEFAULT_OMNIVOICE_DTYPE == "float16"
+				else torch.float32
+			)
 
-			_model = OmniVoice.from_pretrained(
+			_omni_model = OmniVoice.from_pretrained(
 				DEFAULT_OMNIVOICE_MODEL,
 				device_map=device_map,
 				dtype=dtype,
 				load_asr=False,
 			)
+			_active_engine = "omnivoice"
+			logger.info("✅ OmniVoice model loaded (engine: omnivoice)")
 		except Exception as exc:
 			raise RuntimeError(
 				f"Không thể load OmniVoice model '{DEFAULT_OMNIVOICE_MODEL}': {exc}"
 			) from exc
-	return _model
+	return _omni_model
 
 
 def unload_tts_model() -> None:
 	"""Release OmniVoice model and clear CUDA cache when available."""
-	global _model
-	if _model is None:
+	global _omni_model, _active_engine
+	if _omni_model is None:
 		return
 
-	del _model
-	_model = None
+	del _omni_model
+	_omni_model = None
+
+	if _active_engine == "omnivoice":
+		_active_engine = None
+
+	_cleanup_gpu()
+	logger.info("🧹 OmniVoice model unloaded")
+
+
+# ── VieNeu-TTS v2 engine ──────────────────────────────────────
+
+
+def get_vieneu_model():
+	"""Lazy-load VieNeu-TTS v2 Standard (GPU). Unloads OmniVoice first if loaded."""
+	global _vieneu_model, _active_engine
+	if _vieneu_model is None:
+		# Unload OmniVoice if it's currently loaded (mutual exclusion)
+		if _active_engine == "omnivoice":
+			unload_tts_model()
+
+		try:
+			import torch
+			from vieneu.standard import VieNeuTTS
+
+			has_cuda = torch.cuda.is_available()
+			backbone_device = "cuda" if has_cuda else "cpu"
+			codec_device = "cuda" if has_cuda else "cpu"
+
+			logger.info(
+				f"⏳ Loading VieNeu-TTS v2 Standard on {backbone_device}..."
+			)
+			_vieneu_model = VieNeuTTS(
+				backbone_repo=DEFAULT_VIENEU_BACKBONE,
+				backbone_device=backbone_device,
+				codec_repo=DEFAULT_VIENEU_CODEC,
+				codec_device=codec_device,
+				gguf_filename=None,
+			)
+			_active_engine = "vieneu"
+			logger.info("✅ VieNeu-TTS v2 model loaded (engine: vieneu)")
+		except Exception as exc:
+			raise RuntimeError(
+				f"Không thể load VieNeu-TTS v2: {exc}"
+			) from exc
+	return _vieneu_model
+
+
+def unload_vieneu_model() -> None:
+	"""Release VieNeu-TTS v2 model and clear CUDA cache."""
+	global _vieneu_model, _active_engine
+	if _vieneu_model is None:
+		return
 
 	try:
-		import torch
-
-		if torch.cuda.is_available():
-			torch.cuda.empty_cache()
+		_vieneu_model.close()
 	except Exception:
 		pass
 
+	del _vieneu_model
+	_vieneu_model = None
+
+	if _active_engine == "vieneu":
+		_active_engine = None
+
+	_cleanup_gpu()
+	logger.info("🧹 VieNeu-TTS v2 model unloaded")
+
+
+def get_active_engine() -> str | None:
+	"""Return the currently loaded engine name, or None."""
+	return _active_engine
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Voice clones listing
+# ═══════════════════════════════════════════════════════════════
+
 
 def list_voice_clones() -> list[dict]:
-	"""List available voice clones from voice_clones/*.wav files."""
+	"""List available OmniVoice clones from voice_clones/*.wav files."""
 	clones: list[dict] = []
 	for wav_file in sorted(VOICE_CLONES_DIR.glob("*.wav")):
 		txt_file = wav_file.with_suffix(".txt")
@@ -91,12 +206,64 @@ def list_voice_clones() -> list[dict]:
 	return clones
 
 
+def list_vieneu_voice_clones() -> list[dict]:
+	"""List available VieNeu-TTS clones from voice_clones_vieneu/*.wav files.
+
+	Each voice requires a .wav file and a .txt file with the same name.
+	The .txt contains the reference transcript (required for VieNeu v2 cloning).
+	"""
+	clones: list[dict] = []
+	# Support both .wav and .WAV extensions
+	wav_files = sorted(
+		list(VOICE_CLONES_VIENEU_DIR.glob("*.wav"))
+		+ list(VOICE_CLONES_VIENEU_DIR.glob("*.WAV"))
+	)
+	seen_stems: set[str] = set()
+
+	for wav_file in wav_files:
+		stem = wav_file.stem
+		if stem in seen_stems:
+			continue
+		seen_stems.add(stem)
+
+		txt_file = wav_file.with_suffix(".txt")
+		ref_text = ""
+		if txt_file.exists():
+			ref_text = txt_file.read_text(encoding="utf-8").strip()
+
+		clones.append(
+			{
+				"id": stem,
+				"name": stem.replace("-", " ").replace("_", " ").title(),
+				"ref_audio": str(wav_file),
+				"ref_text": ref_text,
+				"has_transcript": txt_file.exists(),
+				"engine": "vieneu",
+			}
+		)
+
+	return clones
+
+
 def get_clone_by_id(voice_id: str) -> dict | None:
-	"""Find a voice clone by its ID."""
+	"""Find an OmniVoice clone by its ID."""
 	for clone in list_voice_clones():
 		if clone["id"] == voice_id:
 			return clone
 	return None
+
+
+def get_vieneu_clone_by_id(voice_id: str) -> dict | None:
+	"""Find a VieNeu clone by its ID."""
+	for clone in list_vieneu_voice_clones():
+		if clone["id"] == voice_id:
+			return clone
+	return None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Audio utilities (shared)
+# ═══════════════════════════════════════════════════════════════
 
 
 def _validate_speed(speed: float) -> float:
@@ -132,10 +299,10 @@ def _build_atempo_filter_chain(speed: float) -> str:
 	return ",".join(parts)
 
 
-def _trim_silence_from_wav(wav_path: Path, top_db: float = 30) -> None:
+def _trim_silence_from_wav(wav_path: Path, top_db: float = 35) -> None:
 	"""Trim leading/trailing silence from a WAV file using librosa.
 
-	This removes the silent padding that OmniVoice sometimes generates at
+	This removes the silent padding that TTS engines sometimes generate at
 	the start and end of synthesized clips, resulting in tighter timing
 	when aligning audio to subtitle slots.
 	"""
@@ -190,7 +357,6 @@ def _apply_speed_to_wav(wav_path: Path, speed: float) -> None:
 def _save_audio(output: Path, audio, sample_rate: int) -> None:
 	"""Write WAV using soundfile to avoid torchaudio/torchcodec save issues."""
 	try:
-		import numpy as np
 		import soundfile as sf
 		import torch
 
@@ -210,6 +376,11 @@ def _save_audio(output: Path, audio, sample_rate: int) -> None:
 		sf.write(str(output), wav, samplerate=sample_rate, format="WAV", subtype="PCM_16")
 	except Exception as exc:
 		raise RuntimeError(f"Không thể lưu audio OmniVoice: {exc}") from exc
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Synthesis functions
+# ═══════════════════════════════════════════════════════════════
 
 
 async def synthesize_line(
@@ -243,6 +414,59 @@ async def synthesize_line(
 	output.parent.mkdir(parents=True, exist_ok=True)
 
 	_save_audio(output, audio, sample_rate)
+	_trim_silence_from_wav(output)
+	_apply_speed_to_wav(output, speech_rate)
+	return str(output)
+
+
+async def synthesize_line_vieneu(
+	text: str,
+	voice_id: str,
+	output_path: str,
+	speech_rate: float = 1.0,
+	temperature: float = 1.0,
+	max_chars: int = 256,
+) -> str:
+	"""Generate one subtitle line with VieNeu-TTS v2 Standard (GPU).
+
+	Uses cached ref_codes when available (encode once, reuse).
+	Saves output as 24 kHz WAV, then applies trim + speed adjustment.
+	"""
+	if not text or not text.strip():
+		raise ValueError("text không được rỗng")
+
+	speech_rate = _validate_speed(speech_rate)
+	clone = get_vieneu_clone_by_id(voice_id)
+	if clone is None:
+		raise ValueError(f"VieNeu voice clone '{voice_id}' không tồn tại")
+
+	if not clone.get("ref_text"):
+		raise ValueError(
+			f"VieNeu voice clone '{voice_id}' chưa có transcript .txt. "
+			f"VieNeu v2 yêu cầu ref_text khi clone giọng."
+		)
+
+	# Get model (lazy load, will unload OmniVoice if needed)
+	model = get_vieneu_model()
+
+	# Synthesize using ref_audio directly (no manual cache encoding)
+	audio = model.infer(
+		text=text,
+		ref_audio=clone["ref_audio"],
+		ref_text=clone["ref_text"],
+		temperature=temperature,
+		max_chars=max_chars,
+	)
+
+	sample_rate = getattr(model, "sample_rate", 24000)
+	output = Path(output_path)
+	output.parent.mkdir(parents=True, exist_ok=True)
+
+	# VieNeu returns np.ndarray float32, save directly with soundfile
+	import soundfile as sf
+
+	sf.write(str(output), audio, sample_rate, format="WAV", subtype="PCM_16")
+
 	_trim_silence_from_wav(output)
 	_apply_speed_to_wav(output, speech_rate)
 	return str(output)

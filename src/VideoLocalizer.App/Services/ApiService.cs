@@ -111,11 +111,12 @@ public class ApiService
     }
 
     /// <summary>
-    /// GET /api/v1/tts/voices — lấy danh sách voice clones có sẵn.
+    /// GET /api/v1/tts/voices hoặc /api/v1/tts/vieneu/voices — lấy danh sách voice clones có sẵn.
     /// </summary>
-    public async Task<List<VoiceClone>> GetVoiceClonesAsync()
+    public async Task<List<VoiceClone>> GetVoiceClonesAsync(string engine = "omnivoice")
     {
-        var resp = await _http.GetAsync($"{_baseUrl}/api/v1/tts/voices");
+        string endpoint = engine == "vieneu" ? "/api/v1/tts/vieneu/voices" : "/api/v1/tts/voices";
+        var resp = await _http.GetAsync($"{_baseUrl}{endpoint}");
         resp.EnsureSuccessStatusCode();
 
         var json = await resp.Content.ReadAsStringAsync();
@@ -124,13 +125,14 @@ public class ApiService
     }
 
     /// <summary>
-    /// POST /api/v1/dubbing — chạy pipeline TTS OmniVoice rồi inject vào CapCut.
+    /// POST /api/v1/dubbing — chạy pipeline TTS rồi inject vào CapCut.
     /// </summary>
     public async Task<TaskStartResponse?> StartDubbingAsync(
         string srtPath,
         string voiceId,
         string capcutProjectName,
-        double speechRate = 1.0)
+        double speechRate = 1.0,
+        string ttsEngine = "omnivoice")
     {
         var payload = new
         {
@@ -138,6 +140,7 @@ public class ApiService
             voice_id = voiceId,
             capcut_project_name = capcutProjectName,
             speech_rate = speechRate,
+            tts_engine = ttsEngine,
         };
 
         return await PostTaskAsync("/api/v1/dubbing", payload);
@@ -228,18 +231,20 @@ public class ApiService
     // =====================================================================
 
     /// <summary>
-    /// POST /api/v1/tts/synthesize — Tạo giọng nói từ text thuần, không cần SRT.
+    /// POST /api/v1/tts/synthesize hoặc /api/v1/tts/vieneu/synthesize — Tạo giọng nói từ text thuần, không cần SRT.
     /// Đồng bộ: trả kết quả ngay khi audio đã được tạo xong.
     /// </summary>
     /// <param name="text">Văn bản cần đọc</param>
     /// <param name="voiceId">ID voice clone</param>
     /// <param name="speechRate">Tốc độ đọc (0.5–2.0)</param>
     /// <param name="outputFilename">Tên file output (để trống = tự tạo)</param>
+    /// <param name="engine">"omnivoice" hoặc "vieneu"</param>
     public async Task<TtsSynthesizeResponse?> SynthesizeTextAsync(
         string text,
         string voiceId,
         double speechRate = 1.0,
-        string outputFilename = "")
+        string outputFilename = "",
+        string engine = "omnivoice")
     {
         var payload = new
         {
@@ -252,7 +257,8 @@ public class ApiService
         var json    = JsonSerializer.Serialize(payload);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        var resp = await _http.PostAsync($"{_baseUrl}/api/v1/tts/synthesize", content);
+        string endpoint = engine == "vieneu" ? "/api/v1/tts/vieneu/synthesize" : "/api/v1/tts/synthesize";
+        var resp = await _http.PostAsync($"{_baseUrl}{endpoint}", content);
         resp.EnsureSuccessStatusCode();
 
         return await resp.Content.ReadFromJsonAsync<TtsSynthesizeResponse>(_jsonOpts);

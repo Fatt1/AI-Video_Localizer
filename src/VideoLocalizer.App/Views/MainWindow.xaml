@@ -484,10 +484,17 @@
                     </StackPanel>
                 </GroupBox>
 
-                <!-- ── Dubbing / OmniVoice Section ── -->
-                <GroupBox Grid.Row="4" Header="Dubbing (OmniVoice -> CapCut)"
+                <!-- ── Dubbing / TTS Section ── -->
+                <GroupBox Grid.Row="4" Header="Dubbing (TTS -> CapCut)"
                           Margin="6,4,6,0" Padding="6,4">
                     <StackPanel>
+                        <DockPanel Margin="0,0,0,6">
+                            <TextBlock Text="Engine:" Width="60" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding TtsEngines}"
+                                      SelectedItem="{Binding SelectedTtsEngine}"
+                                      Margin="0,0,0,0"/>
+                        </DockPanel>
+
                         <DockPanel Margin="0,0,0,6">
                             <TextBlock Text="Voice:" Width="60" VerticalAlignment="Center"/>
                             <ui:Button DockPanel.Dock="Right"
@@ -522,7 +529,7 @@
                                    Icon="{ui:SymbolIcon Mic24}"
                                    HorizontalAlignment="Stretch"
                                    Appearance="Primary"
-                                   ToolTip="OmniVoice TTS + inject vào CapCut project"/>
+                                   ToolTip="Tạo TTS + inject vào CapCut project"/>
                     </StackPanel>
                 </GroupBox>
 
