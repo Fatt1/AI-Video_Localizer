@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _omni_model = None
 _vieneu_model = None
 _active_engine: str | None = None  # "omnivoice" | "vieneu" | None
+_using_lmdeploy: bool = False  # True khi VieNeu đang dùng FastVieNeuTTS (LMDeploy)
 
 DEFAULT_OMNIVOICE_MODEL = os.getenv("OMNIVOICE_MODEL", "k2-fsa/OmniVoice")
 DEFAULT_OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16").lower()
@@ -37,6 +38,11 @@ DEFAULT_VIENEU_BACKBONE = os.getenv(
 )
 DEFAULT_VIENEU_CODEC = os.getenv(
 	"VIENEU_CODEC", "neuphonic/distill-neucodec"
+)
+
+# LMDeploy settings
+DEFAULT_VIENEU_LMDEPLOY_MEMORY_UTIL = float(
+	os.getenv("VIENEU_LMDEPLOY_MEMORY_UTIL", "0.3")
 )
 
 
@@ -118,24 +124,74 @@ def unload_tts_model() -> None:
 # ── VieNeu-TTS v2 engine ──────────────────────────────────────
 
 
+def _should_use_lmdeploy() -> bool:
+	"""Check nếu máy hỗ trợ LMDeploy (cần CUDA, không hỗ trợ macOS)."""
+	import sys
+	if sys.platform == "darwin":
+		return False
+	try:
+		import torch
+		return torch.cuda.is_available()
+	except ImportError:
+		return False
+
+
 def get_vieneu_model():
-	"""Lazy-load VieNeu-TTS v2 Standard (GPU). Unloads OmniVoice first if loaded."""
-	global _vieneu_model, _active_engine
+	"""Lazy-load VieNeu-TTS v2.
+
+	Ưu tiên thử load FastVieNeuTTS (LMDeploy Optimized) trước.
+	Nếu lỗi (chưa cài lmdeploy, thiếu CUDA PATH...) tự động fallback xuống
+	VieNeuTTS Standard (PyTorch thuần).
+
+	Unloads OmniVoice trước khi load (mutual exclusion).
+	"""
+	global _vieneu_model, _active_engine, _using_lmdeploy
 	if _vieneu_model is None:
-		# Unload OmniVoice if it's currently loaded (mutual exclusion)
+		# Mutual exclusion: unload OmniVoice nếu đang chạy
 		if _active_engine == "omnivoice":
 			unload_tts_model()
 
+		import torch
+		has_cuda = torch.cuda.is_available()
+		backbone_device = "cuda" if has_cuda else "cpu"
+		codec_device = "cuda" if has_cuda else "cpu"
+
+		# ── 1. Thử LMDeploy (Optimized) trước ──
+		if _should_use_lmdeploy():
+			try:
+				from vieneu.fast import FastVieNeuTTS
+
+				logger.info(
+					"⏳ Thử load VieNeu-TTS v2 bằng LMDeploy (Optimized) trên cuda..."
+				)
+				_vieneu_model = FastVieNeuTTS(
+					backbone_repo=DEFAULT_VIENEU_BACKBONE,
+					backbone_device="cuda",
+					codec_repo=DEFAULT_VIENEU_CODEC,
+					codec_device=codec_device,
+					memory_util=DEFAULT_VIENEU_LMDEPLOY_MEMORY_UTIL,
+					tp=1,
+					enable_prefix_caching=False,
+					enable_triton=True,
+				)
+				_active_engine = "vieneu"
+				_using_lmdeploy = True
+				logger.info("✅ VieNeu-TTS v2 loaded bằng LMDeploy (Optimized)")
+				return _vieneu_model
+
+			except Exception as lmd_exc:
+				_using_lmdeploy = False
+				logger.warning(
+					f"⚠️ LMDeploy không khởi động được ({lmd_exc}). "
+					f"Đang chuyển sang chế độ Standard..."
+				)
+
+		# ── 2. Fallback: Standard (PyTorch thuần) ──
 		try:
-			import torch
 			from vieneu.standard import VieNeuTTS
 
-			has_cuda = torch.cuda.is_available()
-			backbone_device = "cuda" if has_cuda else "cpu"
-			codec_device = "cuda" if has_cuda else "cpu"
-
 			logger.info(
-				f"⏳ Loading VieNeu-TTS v2 Standard on {backbone_device}..."
+				f"⏳ Loading VieNeu-TTS v2 Standard trên {backbone_device}..."
 			)
 			_vieneu_model = VieNeuTTS(
 				backbone_repo=DEFAULT_VIENEU_BACKBONE,
@@ -145,17 +201,33 @@ def get_vieneu_model():
 				gguf_filename=None,
 			)
 			_active_engine = "vieneu"
-			logger.info("✅ VieNeu-TTS v2 model loaded (engine: vieneu)")
+			_using_lmdeploy = False
+			logger.info("✅ VieNeu-TTS v2 loaded bằng Standard")
 		except Exception as exc:
 			raise RuntimeError(
-				f"Không thể load VieNeu-TTS v2: {exc}"
+				f"Không thể load VieNeu-TTS v2 (cả LMDeploy lẫn Standard đều lỗi): {exc}"
 			) from exc
+
 	return _vieneu_model
 
 
+def get_vieneu_backend_mode() -> str:
+	"""Trả về mô tả backend VieNeu đang dùng.
+
+	Returns:
+		"🚀 LMDeploy (Optimized)" nếu đang dùng FastVieNeuTTS.
+		"📦 Standard" nếu đang dùng VieNeuTTS thuần.
+		"Not loaded" nếu chưa load.
+	"""
+	global _vieneu_model, _using_lmdeploy
+	if _vieneu_model is None:
+		return "Not loaded"
+	return "🚀 LMDeploy (Optimized)" if _using_lmdeploy else "📦 Standard"
+
+
 def unload_vieneu_model() -> None:
-	"""Release VieNeu-TTS v2 model and clear CUDA cache."""
-	global _vieneu_model, _active_engine
+	"""Release VieNeu-TTS v2 model (LMDeploy hoặc Standard) và clear CUDA cache."""
+	global _vieneu_model, _active_engine, _using_lmdeploy
 	if _vieneu_model is None:
 		return
 

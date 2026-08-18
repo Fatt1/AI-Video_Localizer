@@ -16,6 +16,7 @@ from services.tts_service import (
     synthesize_line,
     synthesize_line_vieneu,
     get_active_engine,
+    get_vieneu_backend_mode,
 )
 
 router = APIRouter(tags=["TTS"])
@@ -48,11 +49,12 @@ async def get_engines():
             {
                 "id": "vieneu",
                 "name": "VieNeu-TTS v2",
-                "description": "VieNeu-TTS v2 Standard — GPU CUDA, NeuCodec Distill",
+                "description": "VieNeu-TTS v2 — GPU CUDA, NeuCodec Distill",
                 "voice_dir": "voice_clones_vieneu",
             },
         ],
         "active_engine": get_active_engine(),
+        "vieneu_backend": get_vieneu_backend_mode(),
     }
 
 
