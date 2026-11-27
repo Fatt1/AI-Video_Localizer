@@ -62,62 +62,38 @@ class OcrWorker(BaseWorker):
         fps: float,
         output_srt: str,
         lang: str = "ch",
+        geometric_filter: bool = False,
         parent=None,
     ):
         super().__init__(parent)
-        self.video_path  = video_path
-        self.crop_region = crop_region
-        self.fps         = fps
-        self.output_srt  = output_srt
-        self.lang        = lang
+        self.video_path       = video_path
+        self.crop_region      = crop_region
+        self.fps              = fps
+        self.output_srt       = output_srt
+        self.lang             = lang
+        self.geometric_filter = geometric_filter
 
     async def run_async(self):
-        self.emit_log(f"[OCR] Bắt đầu | video={self.video_path} lang={self.lang}")
+        self.emit_log(
+            f"[OCR] Bắt đầu | video={self.video_path} lang={self.lang} geo_filter={self.geometric_filter}"
+        )
         self.emit_progress(0, "Đang khởi tạo OCR engine...")
 
         # Import backend (sys.path adjusted in main.py)
         import services.ocr_service as ocr_svc
 
-        # Reset engine if language changed
-        current_lang = getattr(ocr_svc._ocr_engine, "_lang", None) if ocr_svc._ocr_engine else None
-        if self.lang != "ch" or (ocr_svc._ocr_engine is not None and current_lang != self.lang):
-            # Force reload engine with new lang
-            ocr_svc._ocr_engine = None
-
-        # Patch PaddleOCR init to use selected lang
-        _orig_init = None
-        if self.lang != "ch":
-            from paddleocr import PaddleOCR as _POCR
-            _orig_get = ocr_svc.get_ocr_engine
-
-            def _patched_get():
-                if ocr_svc._ocr_engine is None:
-                    ocr_svc._ocr_engine = _POCR(
-                        use_angle_cls=True,
-                        use_gpu=True,
-                        lang=self.lang,
-                        show_log=False,
-                    )
-                return ocr_svc._ocr_engine
-
-            ocr_svc.get_ocr_engine = _patched_get
-
         # Capture stdout/stderr from backend prints
         log_buf = io.StringIO()
-        try:
-            with redirect_stdout(log_buf), redirect_stderr(log_buf):
-                task = _ProgressTask(self)
-                await ocr_svc.run_ocr_pipeline(
-                    video_path=self.video_path,
-                    crop_region=self.crop_region,
-                    fps=self.fps,
-                    output_srt=self.output_srt,
-                    task=task,
-                )
-        finally:
-            # Restore original if patched
-            if self.lang != "ch" and _orig_get is not None:
-                ocr_svc.get_ocr_engine = _orig_get
+        with redirect_stdout(log_buf), redirect_stderr(log_buf):
+            task = _ProgressTask(self)
+            await ocr_svc.run_ocr_pipeline(
+                video_path=self.video_path,
+                crop_region=self.crop_region,
+                fps=self.fps,
+                output_srt=self.output_srt,
+                task=task,
+                geometric_filter=self.geometric_filter,
+            )
 
             captured = log_buf.getvalue()
             if captured.strip():

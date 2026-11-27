@@ -16,6 +16,7 @@ class OcrRequest(BaseModel):
     crop_region: list[int]   # [X, Y, W, H]
     fps: float = 4.0         # Tăng lên 4 FPS để bắt phụ đề ngắn < 0.5s
     output_dir: str = ""     # Nếu rỗng → lưu cạnh video
+    geometric_filter: bool = False
 
 
 def _to_user_error_message(exc: Exception) -> str:
@@ -39,6 +40,7 @@ async def _run_ocr_pipeline_safe(
     fps: float,
     output_srt: str,
     task: Task,
+    geometric_filter: bool = False,
 ):
     try:
         await run_ocr_pipeline(
@@ -47,6 +49,7 @@ async def _run_ocr_pipeline_safe(
             fps=fps,
             output_srt=output_srt,
             task=task,
+            geometric_filter=geometric_filter,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -73,7 +76,8 @@ async def start_ocr(req: OcrRequest):
             crop_region=req.crop_region,
             fps=req.fps,
             output_srt=output_srt,
-            task=task
+            task=task,
+            geometric_filter=req.geometric_filter,
         )
     )
 

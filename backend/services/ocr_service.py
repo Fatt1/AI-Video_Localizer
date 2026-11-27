@@ -7,6 +7,7 @@ import numpy as np
 import tempfile
 import os
 import sys
+import math
 import unicodedata
 from pathlib import Path
 from difflib import SequenceMatcher
@@ -333,25 +334,105 @@ def _should_reuse_ocr_result(
     return (current_time - last_ocr_time) <= max_reuse_window
 
 
-def ocr_image(image: np.ndarray) -> tuple[str, float]:
+def _filter_boxes_geometric(
+    boxes,
+    txts,
+    scores,
+    min_score: float = 0.6,
+    min_height_ratio: float = 0.60,
+    max_angle_deg: float = 8.0,
+) -> list[tuple[str, float]]:
     """
-    Nhận diện text từ ảnh dùng RapidOCR (ONNX Runtime GPU).
+    Lọc bounding box theo hình học để loại chữ nhỏ (watermark/comment/nút like)
+    và chữ nghiêng trên nền video, chỉ giữ các dòng subtitle chính.
     """
+    if not txts or not scores:
+        return []
+    if boxes is None or len(boxes) != len(txts):
+        return [
+            (txt, float(score))
+            for txt, score in zip(txts, scores)
+            if txt and float(score) > min_score
+        ]
+
+    candidates: list[tuple[str, float, float]] = []
+    for box, txt, score in zip(boxes, txts, scores):
+        if not txt or float(score) <= min_score:
+            continue
+        pts = np.asarray(box, dtype=np.float32)
+        if pts.shape[0] < 4:
+            continue
+        ys = pts[:, 1]
+        h = float(ys.max() - ys.min())
+        dx = float(pts[1][0] - pts[0][0])
+        dy = float(pts[1][1] - pts[0][1])
+        angle_deg = abs(math.degrees(math.atan2(dy, dx))) if (dx != 0.0 or dy != 0.0) else 0.0
+        if angle_deg > max_angle_deg:
+            continue
+        candidates.append((txt, float(score), h))
+
+    if not candidates:
+        return []
+
+    max_h = max(h for _, _, h in candidates)
+    min_h = max_h * min_height_ratio
+    return [(txt, sc) for txt, sc, h in candidates if h >= min_h]
+
+
+def _filter_entries_by_video_height(
+    raw_entries: list[dict],
+    min_height_ratio: float = 0.60,
+) -> list[dict]:
+    """
+    Lọc cấp toàn video: ước lượng chiều cao subtitle chuẩn của video (p75 của max_h),
+    rồi loại các frame chỉ có chữ nhỏ (ví dụ frame trống subtitle nhưng dính watermark/áo).
+    """
+    heights = [float(e["max_h"]) for e in raw_entries if e.get("max_h", 0.0) > 0.0]
+    if len(heights) < 3:
+        return raw_entries
+    video_sub_h = float(np.percentile(heights, 75))
+    min_h = video_sub_h * min_height_ratio
+    return [e for e in raw_entries if float(e.get("max_h", 0.0)) >= min_h]
+
+
+def _ocr_image_detailed(image: np.ndarray, geometric_filter: bool = False) -> tuple[str, float, float]:
+    """Trả về (text, confidence, max_box_height)."""
     engine = get_ocr_engine()
     result = engine(image)
     if not result or not result.txts or not result.scores:
-        return "", 0.0
+        return "", 0.0, 0.0
 
-    lines = [
-        (txt, float(score))
-        for txt, score in zip(result.txts, result.scores)
-        if txt and float(score) > 0.6
-    ]
+    if geometric_filter:
+        lines = _filter_boxes_geometric(result.boxes, result.txts, result.scores)
+    else:
+        lines = [
+            (txt, float(score))
+            for txt, score in zip(result.txts, result.scores)
+            if txt and float(score) > 0.6
+        ]
     if not lines:
-        return "", 0.0
+        return "", 0.0, 0.0
+
+    max_h = 0.0
+    if result.boxes is not None:
+        kept_texts = {t for t, _ in lines}
+        for box, txt in zip(result.boxes, result.txts):
+            if txt in kept_texts:
+                pts = np.asarray(box, dtype=np.float32)
+                if pts.shape[0] >= 4:
+                    max_h = max(max_h, float(pts[:, 1].max() - pts[:, 1].min()))
 
     text = " ".join(line_text for line_text, _ in lines).strip()
     confidence = sum(line_conf for _, line_conf in lines) / len(lines)
+    return text, confidence, max_h
+
+
+def ocr_image(image: np.ndarray, geometric_filter: bool = False) -> tuple[str, float]:
+    """
+    Nhận diện text từ ảnh dùng RapidOCR (ONNX Runtime GPU).
+    Khi geometric_filter=True, áp dụng lọc hình học theo chiều cao và góc nghiêng box.
+    """
+    text, confidence, _ = _ocr_image_detailed(image, geometric_filter=geometric_filter)
     return text, confidence
 
 
@@ -532,7 +613,8 @@ async def run_ocr_pipeline(
     crop_region: list,
     fps: float,
     output_srt: str,
-    task: Task
+    task: Task,
+    geometric_filter: bool = False,
 ):
     """Pipeline chính: video → frames → dedup → OCR → SRT"""
     print(f"\n[OCR Task {task.task_id}] Bắt đầu xử lý video: {video_path}")
@@ -564,6 +646,7 @@ async def run_ocr_pipeline(
         raw_entries = []
         prev_hash = None
         prev_text = None
+        prev_max_h = 0.0
         last_ocr_time = None
 
         for i, frame_path in enumerate(frame_paths):
@@ -596,8 +679,11 @@ async def run_ocr_pipeline(
             ):
                 text = prev_text
                 confidence = 1.0
+                max_h = prev_max_h
             else:
-                text, confidence = ocr_image(cropped)
+                text, confidence, max_h = _ocr_image_detailed(
+                    cropped, geometric_filter=geometric_filter
+                )
                 text = text or None
                 last_ocr_time = frame_time
 
@@ -607,9 +693,11 @@ async def run_ocr_pipeline(
                     "end": frame_time + (1.0 / fps),
                     "text": text,
                     "confidence": confidence,
+                    "max_h": max_h,
                 })
 
             prev_text = text
+            prev_max_h = max_h
             prev_hash = curr_hash
 
             # Update progress (15% → 90%) — mỗi 20 frames để tránh spam
@@ -618,6 +706,9 @@ async def run_ocr_pipeline(
                 await task.update(progress, f"Đang xử lý frame {i}/{total_frames}...")
 
         await task.update(90, f"Đã nhận diện {len(raw_entries)} frame có chữ. Đang gộp và lọc nhiễu...")
+
+        if geometric_filter and raw_entries:
+            raw_entries = _filter_entries_by_video_height(raw_entries)
 
         # Bước 3: Thuật toán Gộp & Lọc nhiễu
         # Giữ được subtitle ngắn: min_duration phụ thuộc FPS (không dùng hằng số cứng 0.35s).

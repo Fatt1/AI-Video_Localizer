@@ -639,7 +639,7 @@ class MainWindow(QMainWindow):
     # WORKER TASKS: OCR / STT / Dubbing / SRT Tools
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _run_ocr(self, lang_code: str, fps: float, out_srt_path: str):
+    def _run_ocr(self, lang_code: str, fps: float, out_srt_path: str, geometric_filter: bool = False):
         if not self._video_path:
             QMessageBox.warning(self, "OCR", "Chưa mở video.")
             return
@@ -654,6 +654,7 @@ class MainWindow(QMainWindow):
             fps=fps,
             output_srt=out_srt_path,
             lang=lang_code,
+            geometric_filter=geometric_filter,
         )
         self._start_worker(worker, "OCR")
 

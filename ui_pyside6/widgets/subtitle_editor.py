@@ -47,8 +47,8 @@ class SubtitleEditorPanel(QWidget):
     subtitle_canceled = Signal()
 
     # OCR
-    ocr_region_requested = Signal()          # open rubber-band selection
-    run_ocr_requested    = Signal(str, float, str)  # (lang_code, fps, out_srt_path)
+    ocr_region_requested = Signal()                      # open rubber-band selection
+    run_ocr_requested    = Signal(str, float, str, bool)  # (lang_code, fps, out_srt_path, geometric_filter)
 
     # STT
     run_stt_requested = Signal(str, str, float, bool)  # (model_key, language, silence_gap_s, use_diarization)
@@ -241,6 +241,13 @@ class SubtitleEditorPanel(QWidget):
         self._ocr_fps.setSingleStep(0.5)
         self._ocr_fps.setDecimals(1)
         s_lay.addRow("FPS:", self._ocr_fps)
+
+        self._ocr_geo_filter = QCheckBox("Lọc hình học (bỏ chữ nhỏ/watermark)")
+        self._ocr_geo_filter.setChecked(False)
+        self._ocr_geo_filter.setToolTip(
+            "Chỉ giữ các dòng chữ chính theo chiều cao box (>= 60% box lớn nhất) và không nghiêng"
+        )
+        s_lay.addRow("", self._ocr_geo_filter)
 
         lay.addWidget(grp_set)
 
@@ -615,7 +622,8 @@ class SubtitleEditorPanel(QWidget):
         lang_code = lang_text.split(" — ")[0].strip()
         fps       = self._ocr_fps.value()
         out_path  = self._ocr_out_path.text().strip()
-        self.run_ocr_requested.emit(lang_code, fps, out_path)
+        geo_filter = self._ocr_geo_filter.isChecked()
+        self.run_ocr_requested.emit(lang_code, fps, out_path, geo_filter)
 
     def _on_run_stt(self):
         model_key       = self._stt_model.currentData()
