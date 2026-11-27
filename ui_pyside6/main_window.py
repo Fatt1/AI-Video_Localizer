@@ -305,6 +305,7 @@ class MainWindow(QMainWindow):
         self._editor_panel.run_ocr_requested.connect(self._run_ocr)
         self._editor_panel.run_stt_requested.connect(self._run_stt)
         self._editor_panel.run_dubbing_requested.connect(self._run_dubbing)
+        self._editor_panel.run_capcut_speedup_requested.connect(self._run_capcut_speedup)
         self._editor_panel.voices_refresh.connect(self._refresh_voices)
         self._editor_panel.normalize_before_requested.connect(self._normalize_before)
         self._editor_panel.normalize_after_requested.connect(self._normalize_after)
@@ -604,6 +605,27 @@ class MainWindow(QMainWindow):
             speech_rate=rate,
         )
         self._start_worker(worker, "Dubbing")
+
+    def _run_capcut_speedup(self, capcut_project: str, base_rate: float, max_rate: float, clean_pro: bool):
+        if not capcut_project:
+            QMessageBox.warning(self, "Tăng tốc Audio CapCut", "Chưa nhập tên project CapCut.")
+            return
+        if max_rate < base_rate:
+            QMessageBox.warning(
+                self,
+                "Tăng tốc Audio CapCut",
+                f"Tốc độ trần ({max_rate:.2f}×) phải lớn hơn hoặc bằng tốc độ nền ({base_rate:.2f}×).",
+            )
+            return
+
+        from workers.dubbing_worker import CapCutSpeedupWorker
+        worker = CapCutSpeedupWorker(
+            capcut_project_name=capcut_project,
+            base_rate=base_rate,
+            max_rate=max_rate,
+            clean_pro_flags=clean_pro,
+        )
+        self._start_worker(worker, "CapCut Speedup")
 
     def _run_single_tts(self, text: str, voice_id: str, rate: float, output_path: str):
         """Standalone single TTS synthesis -> saved to output_path, then playable."""

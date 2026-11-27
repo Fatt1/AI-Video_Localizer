@@ -55,6 +55,7 @@ class SubtitleEditorPanel(QWidget):
 
     # Dubbing
     run_dubbing_requested = Signal(str, str, float)  # (voice_id, capcut_project, rate)
+    run_capcut_speedup_requested = Signal(str, float, float, bool)  # (capcut_project, base_rate, max_rate, clean_pro)
     voices_refresh        = Signal()
 
     # SRT Tools
@@ -385,6 +386,38 @@ class SubtitleEditorPanel(QWidget):
         self._btn_run_dubbing.setObjectName("btn_run_dubbing")
         self._btn_run_dubbing.clicked.connect(self._on_run_dubbing)
         lay.addWidget(self._btn_run_dubbing)
+
+        # ── Speedup existing CapCut TTS audio ──
+        grp_spd = QGroupBox("⚡ Tăng tốc Audio CapCut có sẵn")
+        spd_lay = QFormLayout(grp_spd)
+        spd_lay.setSpacing(8)
+
+        self._speedup_base_spin = QDoubleSpinBox()
+        self._speedup_base_spin.setRange(0.50, 2.00)
+        self._speedup_base_spin.setSingleStep(0.01)
+        self._speedup_base_spin.setDecimals(2)
+        self._speedup_base_spin.setValue(1.34)
+        self._speedup_base_spin.setSuffix("×")
+        spd_lay.addRow("Tốc độ nền:", self._speedup_base_spin)
+
+        self._speedup_max_spin = QDoubleSpinBox()
+        self._speedup_max_spin.setRange(0.50, 2.00)
+        self._speedup_max_spin.setSingleStep(0.01)
+        self._speedup_max_spin.setDecimals(2)
+        self._speedup_max_spin.setValue(1.56)
+        self._speedup_max_spin.setSuffix("×")
+        spd_lay.addRow("Trần Auto-fit:", self._speedup_max_spin)
+
+        self._speedup_clean_pro_cb = QCheckBox("Làm sạch cờ Pro CapCut khi xuất")
+        self._speedup_clean_pro_cb.setChecked(True)
+        spd_lay.addRow(self._speedup_clean_pro_cb)
+
+        lay.addWidget(grp_spd)
+
+        self._btn_run_speedup = QPushButton("⚡  Tăng tốc Audio CapCut")
+        self._btn_run_speedup.setObjectName("btn_run_speedup")
+        self._btn_run_speedup.clicked.connect(self._on_run_capcut_speedup)
+        lay.addWidget(self._btn_run_speedup)
         lay.addStretch()
 
         return self._scrollable(content)
@@ -561,6 +594,7 @@ class SubtitleEditorPanel(QWidget):
         self._btn_run_ocr.setEnabled(not busy)
         self._btn_run_stt.setEnabled(not busy)
         self._btn_run_dubbing.setEnabled(not busy)
+        self._btn_run_speedup.setEnabled(not busy)
         self._btn_run_tts.setEnabled(not busy)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
@@ -598,6 +632,13 @@ class SubtitleEditorPanel(QWidget):
         project  = self._capcut_project.text().strip()
         rate     = self._speech_rate_slider.value() / 100.0
         self.run_dubbing_requested.emit(voice_id or "", project, rate)
+
+    def _on_run_capcut_speedup(self):
+        project   = self._capcut_project.text().strip()
+        base_rate = self._speedup_base_spin.value()
+        max_rate  = self._speedup_max_spin.value()
+        clean_pro = self._speedup_clean_pro_cb.isChecked()
+        self.run_capcut_speedup_requested.emit(project, base_rate, max_rate, clean_pro)
 
     def _on_run_single_tts(self):
         text     = self._tts_text_input.toPlainText().strip()

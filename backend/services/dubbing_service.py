@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import pysrt
 
 from core.config import TEMP_DIR
 from core.task_manager import Task
 from services.capcut_service import (
+    extract_capcut_tts_items,
     find_draft_folder,
     get_audio_duration_us,
     inject_audio_to_capcut,
+    update_capcut_audio_durations,
 )
 from services.tts_service import (
     apply_speed_to_existing_audio,
@@ -370,3 +373,169 @@ async def run_dubbing_pipeline(
             unload_vieneu_model()
         else:
             unload_tts_model()
+
+
+_DEFAULT_MAX_SPEED_CAP = 1.56
+
+
+def compute_target_speed_rate(
+    orig_duration_us: int,
+    slot_us: int | None,
+    base_rate: float,
+    max_rate: float = _DEFAULT_MAX_SPEED_CAP,
+) -> tuple[float, bool]:
+    """
+    Compute the optimal speech rate for an existing audio clip against its subtitle slot.
+
+    Starts at `base_rate` (e.g. 1.34x). If the sped-up duration still exceeds `slot_us`,
+    automatically increases the rate up to `max_rate` (default 1.56x).
+
+    Returns:
+        (final_rate, auto_adjusted)
+    """
+    clamped_base = max(0.5, min(2.0, float(base_rate)))
+    clamped_max = max(clamped_base, min(2.0, float(max_rate)))
+
+    if orig_duration_us <= 0 or slot_us is None or slot_us <= 0:
+        return clamped_base, False
+
+    estimated_at_base = orig_duration_us / clamped_base
+    if estimated_at_base <= slot_us:
+        return clamped_base, False
+
+    required_rate = (orig_duration_us / slot_us) * _FIT_HEADROOM_RATIO
+    final_rate = min(clamped_max, max(clamped_base, required_rate))
+    auto_adjusted = final_rate > clamped_base + 1e-6
+    return final_rate, auto_adjusted
+
+
+async def run_capcut_speedup_pipeline(
+    capcut_project_name: str,
+    task: Task,
+    base_rate: float = 1.34,
+    max_rate: float = _DEFAULT_MAX_SPEED_CAP,
+    clean_pro_flags: bool = True,
+) -> None:
+    """
+    Read existing TTS audio files from a CapCut project, speed them up with
+    auto-fit against subtitle slots (capped at max_rate, default 1.56x),
+    and update CapCut draft metadata.
+    """
+    await task.update(5, f"Đang tìm project CapCut: {capcut_project_name}...")
+    draft_folder = find_draft_folder(capcut_project_name)
+    if draft_folder is None:
+        await task.fail(
+            f"Không tìm thấy project CapCut '{capcut_project_name}' (hoặc tên bị mơ hồ). "
+            "Hãy nhập đúng tên project và đảm bảo đã đóng CapCut."
+        )
+        return
+
+    await task.update(10, f"Đang đọc danh sách audio từ: {draft_folder.name}...")
+    items = extract_capcut_tts_items(draft_folder)
+    if not items:
+        await task.fail("Không tìm thấy file audio TTS nào trong project CapCut này.")
+        return
+
+    total = len(items)
+    orig_dir = draft_folder / "textReading_orig"
+    orig_dir.mkdir(exist_ok=True)
+
+    duration_updates: dict[str, int] = {}
+    auto_adjusted_count = 0
+    over_slot_count = 0
+    errors: list[tuple[int, str]] = []
+
+    for idx, item in enumerate(items, start=1):
+        if task.is_cancelled():
+            return
+
+        wav_path: Path = item["audio_path"]
+        label = item.get("name") or wav_path.name
+        progress = 10 + int((idx / total) * 78)
+
+        if not wav_path.exists() or wav_path.stat().st_size <= 44:
+            errors.append((idx, f"Không tìm thấy file WAV: {wav_path.name}"))
+            await task.update(progress, f"Bỏ qua dòng {idx}/{total}: thiếu file {wav_path.name}")
+            continue
+
+        # Preserve original 1.0x WAV so re-running with different rates never compounds speed.
+        orig_wav_path = orig_dir / wav_path.name
+        if not orig_wav_path.exists():
+            shutil.copy2(wav_path, orig_wav_path)
+        else:
+            shutil.copy2(orig_wav_path, wav_path)
+
+        try:
+            orig_duration_us = get_audio_duration_us(orig_wav_path)
+            slot_us = item.get("slot_duration_us")
+            final_rate, auto_adjusted = compute_target_speed_rate(
+                orig_duration_us=orig_duration_us,
+                slot_us=slot_us,
+                base_rate=base_rate,
+                max_rate=max_rate,
+            )
+
+            if abs(final_rate - 1.0) >= 1e-6:
+                apply_speed_to_existing_audio(wav_path, final_rate)
+
+            new_duration_us = get_audio_duration_us(wav_path)
+            duration_updates[item["material_id"]] = new_duration_us
+
+            if auto_adjusted:
+                auto_adjusted_count += 1
+                await task.update(
+                    progress,
+                    f"Dòng {idx}/{total} ({label[:24]}): tự tăng {base_rate:.2f}x → {final_rate:.2f}x",
+                )
+            else:
+                await task.update(
+                    progress,
+                    f"Dòng {idx}/{total} ({label[:24]}): {final_rate:.2f}x",
+                )
+
+            if slot_us is not None and new_duration_us > slot_us:
+                over_slot_count += 1
+                over_ms = (new_duration_us - slot_us) / 1000.0
+                await task.update(
+                    progress,
+                    f"⚠ Dòng {idx}: chạm trần {max_rate:.2f}x, vẫn dài hơn slot {over_ms:.0f}ms",
+                )
+        except Exception as exc:
+            reason = _normalize_error_message(exc)
+            errors.append((idx, reason))
+            await task.update(progress, f"Lỗi dòng {idx}: {reason}")
+
+    if task.is_cancelled():
+        return
+
+    if not duration_updates:
+        await task.fail(f"Không xử lý được file audio nào ({len(errors)} lỗi).")
+        return
+
+    await task.update(92, f"Đang cập nhật {len(duration_updates)} audio vào CapCut draft...")
+    backup_path = update_capcut_audio_durations(
+        draft_folder=draft_folder,
+        duration_updates=duration_updates,
+        clean_pro=clean_pro_flags,
+    )
+
+    msg = (
+        f"Đã tăng tốc {len(duration_updates)}/{total} audio trong '{capcut_project_name}' "
+        f"(nền {base_rate:.2f}x, tự điều chỉnh {auto_adjusted_count} câu, "
+        f"chạm trần {max_rate:.2f}x còn dư {over_slot_count} câu)"
+    )
+    await task.complete(
+        result={
+            "total_lines": total,
+            "updated_lines": len(duration_updates),
+            "auto_adjusted_lines": auto_adjusted_count,
+            "over_slot_lines": over_slot_count,
+            "failed_lines": len(errors),
+            "base_rate": base_rate,
+            "max_rate": max_rate,
+            "clean_pro_flags": clean_pro_flags,
+            "draft_folder": str(draft_folder),
+            "backup_path": backup_path,
+            "message": msg,
+        }
+    )

@@ -118,3 +118,49 @@ class SrtToolWorker(BaseWorker):
         except Exception as exc:
             self.emit_log(f"[{self._task_name}] ❌ {exc}")
             self.emit_finished(False, str(exc))
+
+
+class CapCutSpeedupWorker(BaseWorker):
+    """
+    Speed up existing TTS audio files inside a CapCut project with subtitle auto-fit.
+    """
+
+    def __init__(
+        self,
+        capcut_project_name: str,
+        base_rate: float = 1.34,
+        max_rate: float = 1.56,
+        clean_pro_flags: bool = True,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.capcut_project_name = capcut_project_name
+        self.base_rate = base_rate
+        self.max_rate = max_rate
+        self.clean_pro_flags = clean_pro_flags
+
+    async def run_async(self):
+        self.emit_log(
+            f"[CapCut Speedup] Bắt đầu | project={self.capcut_project_name} "
+            f"base={self.base_rate:.2f}x max={self.max_rate:.2f}x clean_pro={self.clean_pro_flags}"
+        )
+        self.emit_progress(0, "Đang khởi tạo tăng tốc audio CapCut...")
+
+        from services.dubbing_service import run_capcut_speedup_pipeline
+
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf), redirect_stderr(buf):
+                task = _ProgressTask(self)
+                await run_capcut_speedup_pipeline(
+                    capcut_project_name=self.capcut_project_name,
+                    task=task,
+                    base_rate=self.base_rate,
+                    max_rate=self.max_rate,
+                    clean_pro_flags=self.clean_pro_flags,
+                )
+        finally:
+            captured = buf.getvalue()
+            for line in captured.strip().splitlines():
+                if line.strip():
+                    self.emit_log(line)

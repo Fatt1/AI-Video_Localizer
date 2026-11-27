@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
 import uuid
 import wave
 from datetime import datetime
 from pathlib import Path
+
+from core.config import FFMPEG_PATH
 
 DEFAULT_CAPCUT_DRAFTS_DIR = Path(
     os.environ.get(
@@ -107,21 +111,55 @@ def backup_draft(draft_folder: Path) -> Path:
     return backup
 
 
+def _get_duration_us_via_ffmpeg(path: Path) -> int:
+    """Fallback duration reader via ffprobe/ffmpeg for non-PCM audio (e.g. MP3 saved as .wav by CapCut)."""
+    ffprobe_exe = str(Path(FFMPEG_PATH).with_name("ffprobe.exe" if os.name == "nt" else "ffprobe"))
+    if not Path(ffprobe_exe).exists():
+        ffprobe_exe = shutil.which("ffprobe") or ""
+
+    if ffprobe_exe:
+        proc = subprocess.run(
+            [
+                ffprobe_exe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            try:
+                return int(float(proc.stdout.strip()) * 1_000_000)
+            except ValueError:
+                pass
+
+    proc = subprocess.run([FFMPEG_PATH, "-i", str(path)], capture_output=True, text=True)
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr or "")
+    if m:
+        hours, mins, secs = int(m.group(1)), int(m.group(2)), float(m.group(3))
+        return int((hours * 3600 + mins * 60 + secs) * 1_000_000)
+
+    raise ValueError(f"Không đọc được thời lượng audio: {path}")
+
+
 def get_audio_duration_us(audio_path: str | Path) -> int:
-    """Read WAV duration in microseconds without loading torch/torchaudio."""
+    """Read audio duration in microseconds (fast wave path + ffprobe/ffmpeg fallback for CapCut MP3-in-WAV)."""
     path = Path(audio_path)
     try:
         with wave.open(str(path), "rb") as wav_file:
             sample_rate = wav_file.getframerate()
             num_frames = wav_file.getnframes()
-    except wave.Error as exc:
-        raise ValueError(f"File WAV không hợp lệ: {audio_path}") from exc
+        if sample_rate > 0:
+            return int((num_frames / sample_rate) * 1_000_000)
+    except (wave.Error, EOFError):
+        pass
 
-    if sample_rate <= 0:
-        raise ValueError(f"File audio không hợp lệ: {audio_path}")
-
-    duration_s = num_frames / sample_rate
-    return int(duration_s * 1_000_000)
+    return _get_duration_us_via_ffmpeg(path)
 
 
 def _generate_uuid() -> str:
@@ -425,5 +463,254 @@ def inject_audio_to_capcut(draft_folder: Path, audio_entries: list[dict]) -> str
         json.dumps(draft, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    return str(backup_path)
+
+
+def resolve_capcut_media_path(draft_folder: Path, raw_path: str) -> Path:
+    """Resolve CapCut ##_draftpath_placeholder_..._## path to an actual Path."""
+    normalized = str(raw_path or "").replace(DRAFT_PATH_PLACEHOLDER, str(draft_folder))
+    return Path(normalized)
+
+
+def _apply_omnivoice_clean_to_material(mat: dict) -> None:
+    """Reset Pro TTS metadata on a CapCut audio material to free OmniVoice Clone schema."""
+    mat["type"] = "text_to_audio"
+    mat["resource_id"] = ""
+    mat["tone_speaker"] = "omnivoice_clone"
+    mat["mock_tone_speaker"] = ""
+    mat["tone_effect_name"] = "OmniVoice Clone"
+    mat["tone_type"] = "OmniVoice Clone"
+    mat["tone_platform"] = "custom"
+    mat["check_flag"] = 1
+    benefit = mat.get("tts_benefit_info")
+    benefit_type = 0 if isinstance(benefit, dict) and isinstance(benefit.get("benefit_type"), int) else "none"
+    mat["tts_benefit_info"] = {
+        "benefit_amount": -1,
+        "benefit_log_extra": "",
+        "benefit_log_id": "",
+        "benefit_type": benefit_type,
+    }
+
+
+def extract_capcut_tts_items(draft_folder: Path) -> list[dict]:
+    """
+    Read existing TTS audio materials and their matching subtitle slot durations
+    from a CapCut draft folder.
+    """
+    draft_json_path = draft_folder / "draft_content.json"
+    if not draft_json_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy draft_content.json trong {draft_folder}")
+
+    draft = json.loads(draft_json_path.read_text(encoding="utf-8"))
+    materials = draft.get("materials", {})
+    audios = materials.get("audios", [])
+    tracks = draft.get("tracks", [])
+
+    # Map text material_id -> slot duration from text tracks
+    text_slot_by_mat_id: dict[str, int] = {}
+    text_segments_ranges: list[tuple[int, int, int]] = []
+    audio_seg_by_mat_id: dict[str, dict] = {}
+
+    for track in tracks:
+        t_type = track.get("type")
+        for seg in track.get("segments", []):
+            mat_id = seg.get("material_id")
+            tr = seg.get("target_timerange", {})
+            start_us = int(tr.get("start", 0))
+            dur_us = int(tr.get("duration", 0))
+            if t_type == "text" and dur_us > 0:
+                if mat_id:
+                    text_slot_by_mat_id[mat_id] = dur_us
+                text_segments_ranges.append((start_us, start_us + dur_us, dur_us))
+            elif t_type == "audio" and mat_id:
+                audio_seg_by_mat_id[mat_id] = seg
+
+    items: list[dict] = []
+    for mat in audios:
+        mat_id = mat.get("id", "")
+        raw_path = mat.get("path", "")
+        if not raw_path:
+            continue
+
+        is_tts = (
+            mat.get("type") == "text_to_audio"
+            or "textReading" in raw_path
+            or mat_id in audio_seg_by_mat_id
+        )
+        if not is_tts:
+            continue
+
+        audio_path = resolve_capcut_media_path(draft_folder, raw_path)
+        seg = audio_seg_by_mat_id.get(mat_id, {})
+        tr = seg.get("target_timerange", {})
+        start_time_us = int(tr.get("start", 0))
+        seg_dur_us = int(tr.get("duration", mat.get("duration", 0)))
+
+        # Resolve subtitle slot duration: exact text_id match first, then overlap fallback
+        text_id = mat.get("text_id", "")
+        slot_duration_us = text_slot_by_mat_id.get(text_id)
+        if slot_duration_us is None and text_segments_ranges and seg_dur_us > 0:
+            seg_end = start_time_us + seg_dur_us
+            best_overlap = 0
+            best_dur = None
+            for t_start, t_end, t_dur in text_segments_ranges:
+                overlap = min(seg_end, t_end) - max(start_time_us, t_start)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_dur = t_dur
+            slot_duration_us = best_dur
+
+        items.append(
+            {
+                "material_id": mat_id,
+                "segment_id": seg.get("id", ""),
+                "text_id": text_id,
+                "name": mat.get("name", audio_path.name),
+                "raw_path": raw_path,
+                "audio_path": audio_path,
+                "start_time_us": start_time_us,
+                "material_duration_us": int(mat.get("duration", 0)),
+                "slot_duration_us": slot_duration_us,
+            }
+        )
+
+    items.sort(key=lambda x: x["start_time_us"])
+    return items
+
+
+def _update_draft_json_durations(
+    draft_path: Path,
+    duration_updates: dict[str, int],
+    clean_pro: bool,
+) -> None:
+    if not draft_path.exists():
+        return
+
+    draft = json.loads(draft_path.read_text(encoding="utf-8"))
+    materials = draft.get("materials", {})
+
+    for mat in materials.get("audios", []):
+        mat_id = mat.get("id")
+        if mat_id in duration_updates:
+            mat["duration"] = duration_updates[mat_id]
+        if clean_pro and (mat.get("type") == "text_to_audio" or mat.get("tone_speaker") or mat_id in duration_updates):
+            _apply_omnivoice_clean_to_material(mat)
+
+    for track in draft.get("tracks", []):
+        if track.get("type") != "audio":
+            continue
+        for seg in track.get("segments", []):
+            mat_id = seg.get("material_id")
+            if mat_id in duration_updates:
+                new_dur = duration_updates[mat_id]
+                seg["speed"] = 1.0
+                if isinstance(seg.get("source_timerange"), dict):
+                    seg["source_timerange"]["start"] = 0
+                    seg["source_timerange"]["duration"] = new_dur
+                if isinstance(seg.get("target_timerange"), dict):
+                    seg["target_timerange"]["duration"] = new_dur
+                if isinstance(seg.get("render_timerange"), dict):
+                    seg["render_timerange"]["duration"] = new_dur
+
+    draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _update_mini_draft_durations(
+    mini_draft_path: Path,
+    duration_updates: dict[str, int],
+    clean_pro: bool,
+) -> None:
+    if not mini_draft_path.exists():
+        return
+
+    try:
+        data = json.loads(mini_draft_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+
+    segments = data.get("mini_draft_data", {}).get("segments", [])
+    if not isinstance(segments, list):
+        return
+
+    for seg in segments:
+        mat = seg.get("material")
+        if not isinstance(mat, dict):
+            continue
+        mat_id = mat.get("id")
+        if mat_id in duration_updates:
+            new_dur = duration_updates[mat_id]
+            mat["duration"] = new_dur
+            if isinstance(seg.get("source_time_range"), dict):
+                seg["source_time_range"]["start"] = 0
+                seg["source_time_range"]["duration"] = new_dur
+            if isinstance(seg.get("target_time_range"), dict):
+                seg["target_time_range"]["duration"] = new_dur
+            if isinstance(seg.get("render_timerange"), dict):
+                seg["render_timerange"]["duration"] = new_dur
+            if isinstance(seg.get("speed"), dict):
+                seg["speed"]["speed"] = 1.0
+        if clean_pro and (mat.get("type") in ("text_to_audio", "extract_music") or mat.get("tone_speaker")):
+            _apply_omnivoice_clean_to_material(mat)
+
+    mini_draft_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def _clean_key_value_and_temp_files(draft_folder: Path) -> None:
+    kv_path = draft_folder / "key_value.json"
+    if kv_path.exists():
+        try:
+            kv = json.loads(kv_path.read_text(encoding="utf-8"))
+            keys_to_delete = [
+                k for k, v in kv.items()
+                if isinstance(v, dict)
+                and v.get("materialCategory") == "tone"
+                and (v.get("is_vip") in ("1", 1) or v.get("template_need_purcahse") is True)
+            ]
+            for k in keys_to_delete:
+                del kv[k]
+            for v in kv.values():
+                if isinstance(v, dict):
+                    if v.get("template_need_purcahse") is True:
+                        v["template_need_purcahse"] = False
+                    if v.get("is_vip") in ("1", 1):
+                        v["is_vip"] = "0"
+            kv_path.write_text(json.dumps(kv, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for pattern in ("*.tmp", "*.bak"):
+        for tmp_file in draft_folder.rglob(pattern):
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
+
+
+def update_capcut_audio_durations(
+    draft_folder: Path,
+    duration_updates: dict[str, int],
+    clean_pro: bool = True,
+) -> str:
+    """
+    Update audio durations (and optionally clean Pro flags) across root draft_content.json,
+    Timelines/*/draft_content.json, and mini_draft.json. Returns backup path.
+    """
+    if not duration_updates:
+        raise ValueError("Không có audio nào được cập nhật thời lượng")
+
+    backup_path = backup_draft(draft_folder)
+
+    _update_draft_json_durations(draft_folder / "draft_content.json", duration_updates, clean_pro)
+
+    timelines_dir = draft_folder / "Timelines"
+    if timelines_dir.exists():
+        for tl_draft in timelines_dir.rglob("draft_content.json"):
+            _update_draft_json_durations(tl_draft, duration_updates, clean_pro)
+        for mini_draft in timelines_dir.rglob("mini_draft.json"):
+            _update_mini_draft_durations(mini_draft, duration_updates, clean_pro)
+
+    if clean_pro:
+        _clean_key_value_and_temp_files(draft_folder)
 
     return str(backup_path)

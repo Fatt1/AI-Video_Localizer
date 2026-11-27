@@ -104,6 +104,50 @@ async def start_dubbing(req: DubbingRequest):
     }
 
 
+class CapCutSpeedupRequest(BaseModel):
+    capcut_project_name: str = Field(..., min_length=1, description="Tên project CapCut")
+    base_rate: float = Field(default=1.34, ge=0.5, le=2.0, description="Tốc độ nền mong muốn")
+    max_rate: float = Field(default=1.56, ge=0.5, le=2.0, description="Tốc độ tối đa khi auto-fit")
+    clean_pro_flags: bool = Field(default=True, description="Làm sạch cờ Pro CapCut khi cập nhật")
+
+
+@router.post("/capcut/speedup", status_code=status.HTTP_202_ACCEPTED)
+async def start_capcut_speedup(req: CapCutSpeedupRequest):
+    """Tăng tốc audio TTS đã có sẵn trong CapCut project và auto-fit theo slot subtitle."""
+    from services.dubbing_service import run_capcut_speedup_pipeline
+
+    if req.max_rate < req.base_rate:
+        raise HTTPException(
+            status_code=422,
+            detail="max_rate phải lớn hơn hoặc bằng base_rate",
+        )
+
+    task = task_manager.create_task("capcut_speedup")
+    task.status = TaskStatus.RUNNING
+
+    async def _run() -> None:
+        try:
+            await run_capcut_speedup_pipeline(
+                capcut_project_name=req.capcut_project_name,
+                task=task,
+                base_rate=req.base_rate,
+                max_rate=req.max_rate,
+                clean_pro_flags=req.clean_pro_flags,
+            )
+        except Exception as exc:
+            logger.exception("CapCut speedup task %s failed unexpectedly", task.task_id)
+            if task.status != TaskStatus.FAILED:
+                await task.fail(f"{type(exc).__name__}: {exc}")
+
+    asyncio.create_task(_run())
+
+    return {
+        "task_id": task.task_id,
+        "message": "Tăng tốc audio CapCut đã bắt đầu. Subscribe SSE để nhận progress.",
+        "stream_url": f"/api/v1/tasks/{task.task_id}/stream",
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # Standalone TTS: tạo giọng nói từ text thuần (không cần SRT)
 # ─────────────────────────────────────────────────────────────
