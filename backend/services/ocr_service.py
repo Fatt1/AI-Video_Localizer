@@ -262,13 +262,26 @@ def get_ocr_engine():
     return _ocr_engine
 
 
-def extract_frames(video_path: str, fps: float, output_dir: str) -> list[str]:
-    """Trích xuất frames từ video dùng FFmpeg"""
+def extract_frames(
+    video_path: str,
+    fps: float,
+    output_dir: str,
+    crop_region: list[int] | None = None,
+) -> list[str]:
+    """Trích xuất frames từ video dùng FFmpeg (hỗ trợ crop trực tiếp trong -vf)."""
     frame_pattern = os.path.join(output_dir, "frame_%06d.jpg")
+    vf_filter = f"fps={fps}"
+    if crop_region and len(crop_region) == 4:
+        x, y, w, h = (int(v) for v in crop_region)
+        if w > 0 and h > 0:
+            x = max(0, x)
+            y = max(0, y)
+            vf_filter = f"{vf_filter},crop=min({w}\\,iw-{x}):min({h}\\,ih-{y}):{x}:{y}"
+
     cmd = [
         FFMPEG_PATH,          # đường dẫn đầy đủ thay vì "ffmpeg"
         "-i", video_path,
-        "-vf", f"fps={fps}",
+        "-vf", vf_filter,
         "-q:v", "2",
         frame_pattern,
         "-y"
@@ -529,7 +542,15 @@ async def run_ocr_pipeline(
         # Bước 1: Trích frames
         print(f"[OCR Task {task.task_id}] Đang dùng FFMPEG cắt video thành từng frames...")
         await task.update(5, "Đang trích xuất frames từ video...")
-        frame_paths = extract_frames(video_path, fps, tmp_dir)
+        already_cropped = bool(
+            crop_region and len(crop_region) == 4 and int(crop_region[2]) > 0 and int(crop_region[3]) > 0
+        )
+        frame_paths = extract_frames(
+            video_path,
+            fps,
+            tmp_dir,
+            crop_region=crop_region if already_cropped else None,
+        )
         total_frames = len(frame_paths)
         print(f"[OCR Task {task.task_id}] Trích xuất thành công {total_frames} frames ảnh.")
         await task.update(15, f"Đã trích xuất {total_frames} frames")
@@ -556,10 +577,12 @@ async def run_ocr_pipeline(
                 await task.update(progress, f"Đang nhận diện chữ... ({i}/{total_frames})", TaskStatus.RUNNING)
 
             image = cv2.imread(frame_path)
-            if image is None:
+            if image is None or image.size == 0:
                 continue
 
-            cropped = crop_frame(image, crop_region)
+            cropped = image if already_cropped else crop_frame(image, crop_region)
+            if cropped is None or cropped.size == 0:
+                continue
             curr_hash = compute_hash(cropped)
             frame_time = i / fps  # Thời gian theo giây
 
