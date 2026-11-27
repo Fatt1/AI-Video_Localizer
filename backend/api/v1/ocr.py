@@ -22,12 +22,13 @@ def _to_user_error_message(exc: Exception) -> str:
     msg = str(exc)
     lowered = msg.lower()
     if (
-        "cudnn64_8.dll" in lowered
+        "cudnn64_" in lowered
+        or "cudaexecutionprovider" in lowered
         or ("dynamic library" in lowered and "error code is 126" in lowered)
     ):
         return (
-            "OCR GPU thất bại vì không nạp được CUDA/cuDNN DLL (cudnn64_8.dll). "
-            "Cấu hình hiện tại là GPU-only nên task sẽ fail ngay. Hãy kiểm tra PATH và package nvidia trong .venv."
+            "OCR GPU thất bại vì không nạp được CUDA/cuDNN DLL cho ONNX Runtime. "
+            "Hãy kiểm tra phiên bản onnxruntime-gpu và CUDA/cuDNN trong .venv."
         )
     return f"OCR thất bại: {msg}"
 

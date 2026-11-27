@@ -238,86 +238,26 @@ def _pick_best_observation_text(observations: list[dict]) -> str:
 from core.task_manager import Task, TaskStatus
 from core.config import FFMPEG_PATH   # dùng path đã detect sẵn
 
-# Khởi tạo PaddleOCR một lần (load model tốn ~5s lần đầu)
-# Dùng PaddleOCR 2.7.x — API ổn định, không dùng PaddleX pipeline
+# Khởi tạo RapidOCR một lần (ONNX Runtime GPU, tắt cls vì subtitle chữ ngang)
 _ocr_engine = None
-_paddle_cuda_paths_initialized = False
-_paddle_cuda_dll_handles = []
-
-
-def _iter_nvidia_bin_dirs() -> list[Path]:
-    import site
-
-    bin_dirs: list[Path] = []
-    for sp in site.getsitepackages():
-        nvidia_dir = Path(sp) / "nvidia"
-        if not nvidia_dir.exists():
-            continue
-        for sub_dir in nvidia_dir.iterdir():
-            dll_bin_path = sub_dir / "bin"
-            if dll_bin_path.exists():
-                bin_dirs.append(dll_bin_path)
-    return bin_dirs
-
-
-def _ensure_paddle_cuda_dll_paths() -> None:
-    """
-    Register NVIDIA DLL directories for Paddle on Windows.
-
-    Important: Do not mutate os.environ['PATH'] globally here because that can
-    shadow PyTorch's own CUDA DLLs and break OmniVoice with WinError 127.
-    """
-    global _paddle_cuda_paths_initialized, _paddle_cuda_dll_handles
-    if _paddle_cuda_paths_initialized:
-        return
-
-    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
-        _paddle_cuda_paths_initialized = True
-        return
-
-    dll_dirs = _iter_nvidia_bin_dirs()
-    for dll_bin_path in dll_dirs:
-        try:
-            # Keep handles alive for process lifetime so DLL search paths stay valid.
-            handle = os.add_dll_directory(str(dll_bin_path))
-            _paddle_cuda_dll_handles.append(handle)
-        except Exception:
-            # Ignore non-critical registration errors and let Paddle raise later if needed.
-            continue
-
-    # Follow Paddle guidance on Windows: ensure CUDA/cuDNN bin folders are in PATH.
-    # Inject lazily here (not at import-time) to reduce side effects to OCR startup only.
-    existing_path = os.environ.get("PATH", "")
-    existing_path_items = {p.strip().lower() for p in existing_path.split(os.pathsep) if p.strip()}
-    prepend_items = [str(p) for p in dll_dirs if str(p).strip().lower() not in existing_path_items]
-    if prepend_items:
-        os.environ["PATH"] = os.pathsep.join(prepend_items + ([existing_path] if existing_path else []))
-
-    _paddle_cuda_paths_initialized = True
 
 
 def get_ocr_engine():
     global _ocr_engine
     if _ocr_engine is None:
-        # Preload torch before registering Paddle CUDA paths to avoid DLL conflicts
-        # when both OCR (Paddle) and dubbing (OmniVoice/Torch) run in one process.
-        if "torch" not in sys.modules:
-            try:
-                import torch  # noqa: F401
-            except Exception:
-                pass
+        import onnxruntime as ort
 
-        _ensure_paddle_cuda_dll_paths()
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
 
-        from paddleocr import PaddleOCR
+        from rapidocr import RapidOCR
 
-        # use_angle_cls=True: xoay ảnh để detect text nghiêng
-        # GPU-only theo yêu cầu: nếu GPU/CUDA lỗi thì fail luôn.
-        _ocr_engine = PaddleOCR(
-            use_angle_cls=True,
-            use_gpu=True,
-            lang='ch',
-            show_log=False,
+        _ocr_engine = RapidOCR(
+            params={
+                "Global.use_cls": False,
+                "Global.log_level": "warning",
+                "EngineConfig.onnxruntime.use_cuda": True,
+            }
         )
     return _ocr_engine
 
@@ -382,17 +322,17 @@ def _should_reuse_ocr_result(
 
 def ocr_image(image: np.ndarray) -> tuple[str, float]:
     """
-    Nhận diện text từ ảnh dùng PaddleOCR 2.7.x.
-    Output format: [[[box_coords], (text, confidence)], ...]
+    Nhận diện text từ ảnh dùng RapidOCR (ONNX Runtime GPU).
     """
     engine = get_ocr_engine()
-    result = engine.ocr(image, cls=True)
-    if not result or not result[0]:
+    result = engine(image)
+    if not result or not result.txts or not result.scores:
         return "", 0.0
+
     lines = [
-        (line[1][0], float(line[1][1]))
-        for line in result[0]
-        if line and line[1][1] > 0.6
+        (txt, float(score))
+        for txt, score in zip(result.txts, result.scores)
+        if txt and float(score) > 0.6
     ]
     if not lines:
         return "", 0.0
