@@ -105,10 +105,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(200, self._refresh_voices)
 
     def _init_splitter_sizes(self):
-        """Set timeline to ~40% of window height after window is shown."""
+        """Set timeline to ~28% of window height after window is shown."""
         total_h = self._v_splitter.height()
         if total_h > 200:
-            top_h      = int(total_h * 0.60)
+            top_h      = int(total_h * 0.72)
             timeline_h = total_h - top_h
             self._v_splitter.setSizes([top_h, timeline_h])
 
@@ -133,23 +133,23 @@ class MainWindow(QMainWindow):
         self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._main_splitter.setHandleWidth(3)
 
-        # LEFT — Warning panel
+        # LEFT — Full Subtitle list + Console log
         self._warning_panel = WarningPanel()
-        self._warning_panel.setMinimumWidth(200)
+        self._warning_panel.setMinimumWidth(340)
         self._main_splitter.addWidget(self._warning_panel)
 
         # CENTER — Video player
         self._video_player = VideoPlayerWidget()
-        self._video_player.setMinimumWidth(400)
+        self._video_player.setMinimumWidth(360)
         self._main_splitter.addWidget(self._video_player)
 
         # RIGHT — Subtitle editor panel
         self._editor_panel = SubtitleEditorPanel()
-        self._editor_panel.setMinimumWidth(220)
+        self._editor_panel.setMinimumWidth(240)
         self._main_splitter.addWidget(self._editor_panel)
 
-        # Set initial proportions: 22% | 53% | 25%
-        self._main_splitter.setSizes([240, 680, 300])
+        # Set initial proportions: ~36% Left | ~42% Center | ~22% Right
+        self._main_splitter.setSizes([460, 520, 280])
         top_layout.addWidget(self._main_splitter)
         self._v_splitter.addWidget(self._top_widget)
 
@@ -295,8 +295,15 @@ class MainWindow(QMainWindow):
         self._timeline.context_add_after.connect(self._on_add_after)
         self._timeline.context_delete.connect(self._on_delete)
 
-        # Warning panel
+        # Warning / Subtitle list panel
         self._warning_panel.seek_to_subtitle.connect(self._video_player.seek_to_ms)
+        self._warning_panel.subtitle_selected.connect(self._on_table_subtitle_selected)
+        self._warning_panel.subtitle_inline_edited.connect(self._on_subtitle_applied)
+        self._warning_panel.add_subtitle_requested.connect(self._on_table_add_subtitle)
+        self._warning_panel.delete_selected_requested.connect(self._on_delete_batch)
+        self._warning_panel.merge_selected_requested.connect(self._on_merge_batch)
+        self._warning_panel.shift_selected_requested.connect(self._on_shift_batch)
+        self._warning_panel.move_entry_requested.connect(self._on_move_entry)
 
         # Editor panel signals
         self._editor_panel.subtitle_applied.connect(self._on_subtitle_applied)
@@ -414,6 +421,7 @@ class MainWindow(QMainWindow):
                 if self._selected_idx != e.index:
                     self._selected_idx = e.index
                     self._timeline.set_selected(e.index)
+                    self._warning_panel.highlight_entry(e.index)
                 break
 
     def _on_timeline_seek(self, ms: int):
@@ -507,6 +515,104 @@ class MainWindow(QMainWindow):
             reindex(self._entries)
             self._refresh_timeline()
             self._refresh_warnings()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUBTITLE TABLE BATCH ACTIONS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _on_table_subtitle_selected(self, entry_index: int):
+        self._selected_idx = entry_index
+        self._timeline.set_selected(entry_index)
+
+    def _on_table_add_subtitle(self):
+        dialog = AddSubtitleDialog(
+            default_start_ms=self._video_player.get_current_ms(),
+            parent=self,
+        )
+        if dialog.exec() and dialog.result_entry:
+            self._entries.append(dialog.result_entry)
+            self._entries.sort(key=lambda e: e.start_ms)
+            reindex(self._entries)
+            self._refresh_timeline()
+            self._refresh_warnings()
+            self._warning_panel.append_log(f"[Add] Thêm subtitle mới ({dialog.result_entry.start_str})")
+
+    def _on_delete_batch(self, indices: list[int]):
+        idx_set = set(indices)
+        targets = [e for e in self._entries if e.index in idx_set]
+        if not targets:
+            return
+        msg = (
+            f"Xóa subtitle #{targets[0].index}?\n\"{targets[0].text[:60]}\""
+            if len(targets) == 1
+            else f"Xóa {len(targets)} dòng subtitle đã chọn?"
+        )
+        reply = QMessageBox.question(
+            self,
+            "Xóa Subtitle",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._entries = [e for e in self._entries if e.index not in idx_set]
+            reindex(self._entries)
+            self._selected_idx = None
+            self._refresh_timeline()
+            self._refresh_warnings()
+            self._set_status(f"Đã xóa {len(targets)} dòng subtitle")
+            self._warning_panel.append_log(f"[Delete] Đã xóa {len(targets)} dòng")
+
+    def _on_merge_batch(self, indices: list[int]):
+        idx_set = set(indices)
+        selected = [e for e in self._entries if e.index in idx_set]
+        if len(selected) < 2:
+            return
+        selected.sort(key=lambda e: e.start_ms)
+        merged = SubtitleEntry(
+            index=selected[0].index,
+            start_ms=min(e.start_ms for e in selected),
+            end_ms=max(e.end_ms for e in selected),
+            text=" ".join(e.text.strip() for e in selected if e.text.strip()),
+        )
+        first_pos = next(i for i, e in enumerate(self._entries) if e.index in idx_set)
+        remaining = [e for e in self._entries if e.index not in idx_set]
+        remaining.insert(first_pos, merged)
+        self._entries = reindex(remaining)
+        self._selected_idx = merged.index
+        self._refresh_timeline()
+        self._refresh_warnings()
+        self._set_status(f"Đã gộp {len(selected)} dòng thành 1")
+        self._warning_panel.append_log(f"[Merge] Gộp {len(selected)} dòng → #{merged.index}")
+
+    def _on_shift_batch(self, indices: list[int], delta_ms: int):
+        idx_set = set(indices)
+        count = 0
+        for e in self._entries:
+            if e.index in idx_set:
+                dur = e.duration_ms
+                new_start = max(0, e.start_ms + delta_ms)
+                e.start_ms = new_start
+                e.end_ms = max(new_start, new_start + dur)
+                count += 1
+        if count:
+            self._refresh_timeline()
+            self._refresh_warnings()
+            self._set_status(f"Đã dịch {delta_ms:+d}ms cho {count} dòng")
+            self._warning_panel.append_log(f"[Shift] Dịch {delta_ms:+d}ms cho {count} dòng")
+
+    def _on_move_entry(self, entry_index: int, direction: int):
+        pos = next((i for i, e in enumerate(self._entries) if e.index == entry_index), None)
+        if pos is None:
+            return
+        new_pos = pos + direction
+        if not (0 <= new_pos < len(self._entries)):
+            return
+        self._entries[pos], self._entries[new_pos] = self._entries[new_pos], self._entries[pos]
+        reindex(self._entries)
+        self._selected_idx = self._entries[new_pos].index
+        self._refresh_timeline()
+        self._refresh_warnings()
+        self._warning_panel.highlight_entry(self._selected_idx)
 
     # ══════════════════════════════════════════════════════════════════════════
     # OCR REGION SELECTION
@@ -827,6 +933,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_timeline(self):
         self._timeline.set_entries(self._entries)
+        self._warning_panel.set_entries(self._entries)
         if self._selected_idx is not None:
             self._timeline.set_selected(self._selected_idx)
 
